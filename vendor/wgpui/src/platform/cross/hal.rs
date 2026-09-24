@@ -23,6 +23,8 @@ use crate::{GpuSpecs, NativeDevice, NativeTexture, SurfaceFormat, WindowPresentM
 pub(crate) mod wgpu;
 #[cfg(feature = "vulkan")]
 pub(crate) mod vulkan;
+#[cfg(all(feature = "dx12", windows))]
+pub(crate) mod d3d12;
 
 /// Usages d'un buffer (combinables par `|`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -35,6 +37,8 @@ impl BufferUsage {
     pub(crate) const COPY_SRC: Self = Self(1 << 3);
     pub(crate) const COPY_DST: Self = Self(1 << 4);
 
+    /// D3D12 ignore les usages de buffer.
+    #[cfg_attr(not(any(feature = "wgpu", feature = "vulkan")), allow(dead_code))]
     pub(crate) fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0
     }
@@ -91,6 +95,8 @@ pub(crate) enum BindingKind {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct LayoutEntry {
     pub(crate) binding: u32,
+    /// D3D12 rend tout visible de tous les étages.
+    #[cfg_attr(not(any(feature = "wgpu", feature = "vulkan")), allow(dead_code))]
     pub(crate) visibility: ShaderStages,
     pub(crate) kind: BindingKind,
 }
@@ -99,7 +105,8 @@ pub(crate) enum BindResource<'a, G: Gpu> {
     /// `size: None` = jusqu'à la fin du buffer.
     Buffer { buffer: &'a G::Buffer, offset: u64, size: Option<u64> },
     Texture(&'a G::TextureView),
-    Sampler(&'a G::Sampler),
+    /// D3D12 n'a qu'un sampler, dans son tas.
+    Sampler(#[cfg_attr(not(any(feature = "wgpu", feature = "vulkan")), allow(dead_code))] &'a G::Sampler),
 }
 
 pub(crate) struct BindEntry<'a, G: Gpu> {

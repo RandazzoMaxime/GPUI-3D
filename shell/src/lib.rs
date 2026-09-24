@@ -4,8 +4,8 @@
 //! `swap_buffers` + `request_window_redraw` ⇒ la fenêtre recompose la scène en
 //! cache, le chrome n'est jamais redessiné pour une trame 3D.
 //!
-//! Le backend de l'UI se choisit par [`Ui`] : wgpu (feature `wgpu`) ou natif (feature
-//! `vulkan`, sans wgpu dans le binaire).
+//! Le backend de l'UI se choisit par [`Ui`] : wgpu (feature `wgpu`) ou natif (features
+//! `vulkan`, `dx12`, sans wgpu dans le binaire).
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -35,6 +35,9 @@ pub enum Ui {
     /// Vulkan natif, sans wgpu.
     #[cfg(feature = "vulkan")]
     Vulkan,
+    /// D3D12 natif, sans wgpu.
+    #[cfg(all(feature = "dx12", windows))]
+    Dx12,
 }
 
 impl Ui {
@@ -47,6 +50,8 @@ impl Ui {
             }),
             #[cfg(feature = "vulkan")]
             Self::Vulkan => RendererBackend::Vulkan,
+            #[cfg(all(feature = "dx12", windows))]
+            Self::Dx12 => RendererBackend::Dx12,
         }
     }
 }

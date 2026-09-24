@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-gpui3d-shell = { workspace = true, features = ["wgpu"] }
+# Full natif : l'UI de GPUI rend elle aussi en D3D12 (windows-rs), sans wgpu.
+gpui3d-shell = { workspace = true, features = ["dx12"] }
 bytemuck.workspace = true
 
 [target.'cfg(windows)'.dependencies]

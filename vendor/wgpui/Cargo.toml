@@ -24,6 +24,8 @@ default = ["font-kit", "wgpu"]
 wgpu = ["dep:wgpu", "dep:ash", "dep:windows-core"]
 # GPUI-3D : renderer UI Vulkan natif (ash), sans wgpu. Shaders traduits par naga au build.
 vulkan = ["dep:ash", "dep:ash-window", "dep:naga"]
+# GPUI-3D : renderer UI D3D12 natif (windows-rs), sans wgpu. WGSL → HLSL (naga) → DXBC (FXC) au build.
+dx12 = ["dep:windows", "dep:windows-core", "dep:naga", "naga/hlsl-out"]
 test-support = [
     "leak-detection",
     "collections/test-support",
@@ -169,6 +171,15 @@ objc2-foundation = { version = "0.2", features = ["NSData"] }
 [target.'cfg(windows)'.dependencies]
 # GPUI-3D : poignées D3D12 brutes (`Interface::as_raw`), même version que wgpu-hal 30.
 windows-core = { version = "0.62", optional = true }
+windows = { version = "0.62", optional = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D12",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_System_Threading",
+] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 x11-dl = "2.21.0"
@@ -176,6 +187,11 @@ x11-dl = "2.21.0"
 [build-dependencies]
 # GPUI-3D : WGSL → SPIR-V hors ligne (feature `vulkan`), même version que wgpu 30.
 naga = { version = "30", optional = true, features = ["wgsl-in", "spv-out"] }
+# GPUI-3D : compilateur HLSL → DXBC (d3dcompiler_47, présent sur tout Windows 10+), feature `dx12`.
+windows = { version = "0.62", optional = true, features = [
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D_Fxc",
+] }
 
 [dev-dependencies]
 backtrace = "0.3"

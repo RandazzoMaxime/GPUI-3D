@@ -18,8 +18,12 @@ use super::{
     render_context::{WgpuContext, WgpuOptions},
     renderer::WgpuRenderer,
 };
+#[cfg(any(feature = "vulkan", all(feature = "dx12", windows)))]
+use super::{atlas::Atlas, render_context::RenderContext, renderer::Renderer};
+#[cfg(all(feature = "dx12", windows))]
+use super::hal::d3d12::D3d12Gpu;
 #[cfg(feature = "vulkan")]
-use super::{atlas::Atlas, hal::vulkan::VulkanGpu, render_context::RenderContext, renderer::Renderer};
+use super::hal::vulkan::VulkanGpu;
 
 #[cfg(all(target_family = "wasm", not(feature = "wgpu")))]
 compile_error!("gpui-ce en wasm exige la feature `wgpu` (seul backend disponible dans un navigateur).");
@@ -35,18 +39,25 @@ pub enum RendererBackend {
     /// Vulkan 1.3 natif (ash), sans wgpu : GPU discret de préférence.
     #[cfg(feature = "vulkan")]
     Vulkan,
+    /// D3D12 natif (windows-rs), sans wgpu : GPU matériel le plus performant.
+    #[cfg(all(feature = "dx12", windows))]
+    Dx12,
     #[doc(hidden)]
     Absent(Infallible),
 }
 
 impl RendererBackend {
-    /// Backend nommé par `GPUI_RENDERER` (`wgpu`, `vulkan`) s'il est compilé, sinon le
+    /// Backend nommé par `GPUI_RENDERER` (`wgpu`, `vulkan`, `dx12`) s'il est compilé, sinon le
     /// premier compilé dans l'ordre de déclaration ; `None` si aucun.
     pub fn compiled_default() -> Option<Self> {
         let requested = std::env::var("GPUI_RENDERER").unwrap_or_default();
         #[cfg(feature = "vulkan")]
         if requested.eq_ignore_ascii_case("vulkan") {
             return Some(Self::Vulkan);
+        }
+        #[cfg(all(feature = "dx12", windows))]
+        if requested.eq_ignore_ascii_case("dx12") {
+            return Some(Self::Dx12);
         }
         #[cfg(feature = "wgpu")]
         if requested.is_empty() || requested.eq_ignore_ascii_case("wgpu") {
@@ -58,6 +69,8 @@ impl RendererBackend {
         }
         #[cfg(feature = "vulkan")]
         return Some(Self::Vulkan);
+        #[cfg(all(feature = "dx12", windows, not(feature = "vulkan")))]
+        return Some(Self::Dx12);
         #[allow(unreachable_code)]
         None
     }
@@ -70,6 +83,8 @@ pub(crate) enum GpuContext {
     Wgpu(Arc<WgpuContext>),
     #[cfg(feature = "vulkan")]
     Vulkan(Arc<RenderContext<VulkanGpu>>),
+    #[cfg(all(feature = "dx12", windows))]
+    Dx12(Arc<RenderContext<D3d12Gpu>>),
     #[allow(dead_code)]
     Absent(Infallible),
 }
@@ -80,6 +95,8 @@ pub(crate) enum WindowAtlas {
     Wgpu(Arc<WgpuAtlas>),
     #[cfg(feature = "vulkan")]
     Vulkan(Arc<Atlas<VulkanGpu>>),
+    #[cfg(all(feature = "dx12", windows))]
+    Dx12(Arc<Atlas<D3d12Gpu>>),
     #[allow(dead_code)]
     Absent(Infallible),
 }
@@ -90,6 +107,8 @@ pub(crate) enum WindowRenderer {
     Wgpu(WgpuRenderer),
     #[cfg(feature = "vulkan")]
     Vulkan(Renderer<VulkanGpu>),
+    #[cfg(all(feature = "dx12", windows))]
+    Dx12(Renderer<D3d12Gpu>),
     #[allow(dead_code)]
     Absent(Infallible),
 }
@@ -102,6 +121,8 @@ macro_rules! dispatch {
             $enum::Wgpu($inner) => $body,
             #[cfg(feature = "vulkan")]
             $enum::Vulkan($inner) => $body,
+            #[cfg(all(feature = "dx12", windows))]
+            $enum::Dx12($inner) => $body,
             $enum::Absent(never) => match *never {},
         }
     };
@@ -116,6 +137,8 @@ impl GpuContext {
             RendererBackend::Wgpu(options) => Ok(Self::Wgpu(Arc::new(WgpuContext::new(options)?))),
             #[cfg(feature = "vulkan")]
             RendererBackend::Vulkan => Ok(Self::Vulkan(Arc::new(RenderContext::with_gpu(VulkanGpu::new()?)))),
+            #[cfg(all(feature = "dx12", windows))]
+            RendererBackend::Dx12 => Ok(Self::Dx12(Arc::new(RenderContext::with_gpu(D3d12Gpu::new()?)))),
             RendererBackend::Absent(never) => match *never {},
         }
     }
@@ -126,6 +149,8 @@ impl GpuContext {
             Self::Wgpu(context) => WindowAtlas::Wgpu(Arc::new(WgpuAtlas::new(context.gpu.clone()))),
             #[cfg(feature = "vulkan")]
             Self::Vulkan(context) => WindowAtlas::Vulkan(Arc::new(Atlas::new(context.gpu.clone()))),
+            #[cfg(all(feature = "dx12", windows))]
+            Self::Dx12(context) => WindowAtlas::Dx12(Arc::new(Atlas::new(context.gpu.clone()))),
             Self::Absent(never) => match *never {},
         }
     }
@@ -149,6 +174,14 @@ impl GpuContext {
             )?)),
             #[cfg(feature = "vulkan")]
             (Self::Vulkan(context), WindowAtlas::Vulkan(atlas)) => Ok(WindowRenderer::Vulkan(Renderer::new(
+                context.clone(),
+                window,
+                atlas.clone(),
+                width,
+                height,
+            )?)),
+            #[cfg(all(feature = "dx12", windows))]
+            (Self::Dx12(context), WindowAtlas::Dx12(atlas)) => Ok(WindowRenderer::Dx12(Renderer::new(
                 context.clone(),
                 window,
                 atlas.clone(),

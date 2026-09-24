@@ -1,4 +1,5 @@
-//! Moteur 3D en D3D12 natif, sans wgpu : GPUI fournit son `ID3D12Device`, son
+//! Full natif : l'UI de GPUI et ce moteur 3D rendent tous deux en D3D12, sans wgpu dans
+//! le binaire. GPUI fournit son `ID3D12Device`, son
 //! `ID3D12CommandQueue` et la `ID3D12Resource` du tampon arrière ; allocateurs, listes,
 //! fence, tas de descripteurs, root signature et PSO sont à nous. Même queue que le
 //! compositeur ⇒ l'ordre de soumission porte la synchronisation ; une queue D3D12 est
@@ -18,7 +19,7 @@ use windows::core::{Interface, PCSTR, s};
 const COLOR_FORMAT: DXGI_FORMAT = DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
 const DEPTH_FORMAT: DXGI_FORMAT = DXGI_FORMAT_D32_FLOAT;
 const FRAMES_IN_FLIGHT: usize = 2;
-/// Contrat du fork : le tampon arrive et repart dans l'état `RESOURCE` de wgpu.
+/// Contrat du fork : le tampon arrive et repart dans l'état « échantillonné ».
 const SAMPLED: D3D12_RESOURCE_STATES =
     D3D12_RESOURCE_STATES(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE.0 | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE.0);
 
@@ -52,7 +53,7 @@ impl Renderer for Dx12Cube {
         let Some(NativeDevice::Dx12 { device, queue }) = surface.native_device() else {
             panic!("GPUI ne tourne pas sur D3D12");
         };
-        // Pointeurs empruntés à wgpu : `clone` = AddRef.
+        // Pointeurs empruntés à GPUI : `clone` = AddRef.
         let device = unsafe { ID3D12Device::from_raw_borrowed(&device) }.expect("ID3D12Device").clone();
         let queue = unsafe { ID3D12CommandQueue::from_raw_borrowed(&queue) }.expect("ID3D12CommandQueue").clone();
         unsafe {

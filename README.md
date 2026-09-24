@@ -12,7 +12,7 @@ compteur FPS.
 | [`GPUI-WGPU`](GPUI-WGPU/src/main.rs) | wgpu | wgpu | tous ceux de wgpu : Metal, Vulkan, DX12, GL (`WGPU_BACKEND=…`) |
 | [`GPUI-METAL`](GPUI-METAL/src/metal_cube.rs) | Metal natif (objc2-metal, MSL) | wgpu (Metal) | Metal — macOS |
 | [`GPUI-VULKAN`](GPUI-VULKAN/src/main.rs) | Vulkan natif (ash, GLSL → SPIR-V) | **Vulkan natif** — full natif, sans wgpu | Vulkan 1.3 — Windows, Linux ; macOS si MoltenVK expose Vulkan 1.3 (non vérifié) |
-| [`GPUI-DX12`](GPUI-DX12/src/dx12_cube.rs) | D3D12 natif (windows-rs, HLSL → DXBC) | wgpu (D3D12) | D3D12 — Windows |
+| [`GPUI-DX12`](GPUI-DX12/src/dx12_cube.rs) | D3D12 natif (windows-rs, HLSL → DXBC) | **D3D12 natif** — full natif, sans wgpu | D3D12 — Windows |
 | [`GPUI-OPENGL`](GPUI-OPENGL/src/opengl_cube.rs) | OpenGL 4.5 natif (WGL, GLSL) + interop D3D12 pour publier | wgpu (D3D12) | Windows |
 
 Deux familles de variantes :
@@ -21,7 +21,7 @@ Deux familles de variantes :
   en wgpu ou dans l'API native du device choisi.
 - **full natif** : l'UI de GPUI **et** le moteur 3D rendent tous deux dans l'API
   native, wgpu absent du binaire (`cargo tree -p gpui-vulkan` n'en contient pas).
-  Disponible pour Vulkan ; D3D12, OpenGL et Metal suivront par la même couche.
+  Disponible pour Vulkan et D3D12 ; OpenGL et Metal suivront par la même couche.
 
 Les moteurs natifs **ne dépendent pas de wgpu** : ils reçoivent de GPUI des
 poignées natives brutes (`MTLDevice`/`MTLCommandQueue`/`MTLTexture`,
@@ -39,7 +39,10 @@ cargo run -p gpui-opengl
 ```
 
 Lancer une variante à la fois (`-p`) : un build de tout le workspace unifie les
-features et compile aussi wgpu dans `gpui-vulkan` (il reste inutilisé).
+features et compile aussi wgpu dans les variantes full natif (il y reste inutilisé).
+
+`GPUI_D3D12_DEBUG=1` active la couche de debug D3D12 (« Outils graphiques » de Windows)
+et relaie ses avertissements et erreurs sur stderr.
 
 `GPUI-OPENGL` exige un pilote exposant `GL_EXT_memory_object_win32` et
 `GL_EXT_semaphore_win32`, et un contexte GL sur le même GPU que le device D3D12 de GPUI
@@ -102,7 +105,11 @@ La recette :
 Sur une UI wgpu, `handle.as_wgpu()` donne en plus l'accès wgpu (`WgpuSurfaceHandle`).
 Le renderer de l'UI passe par une couche interne (`platform/cross/hal.rs`) dont wgpu
 et Vulkan natif sont deux implémentations, choisies par `RendererBackend`
-(ou `GPUI_RENDERER=wgpu|vulkan` pour les exemples du fork) :
+(ou `GPUI_RENDERER=wgpu|vulkan|dx12` pour les exemples du fork). Les shaders WGSL de l'UI
+sont traduits au build par naga (SPIR-V pour Vulkan, HLSL compilé en DXBC par FXC pour
+D3D12). Une swapchain DXGI de fenêtre est opaque, là où Vulkan prend l'alpha prémultiplié :
+les flous d'arrière-plan diffèrent donc légèrement entre les deux API, exactement comme
+avec wgpu sur chacune d'elles.
 
 - **Metal** : même `MTLCommandQueue` que le compositeur ⇒ ordre garanti, textures
   « tracked » ⇒ aucun fence. On commit puis `swap_buffers()`.
