@@ -9,3 +9,4 @@ libc = "0.2"
 gpui3d-shell.workspace = true
 wgpu.workspace = true
 bytemuck.workspace = true
+gpui-component = { path = "../vendor/gpui-component/crates/ui" }

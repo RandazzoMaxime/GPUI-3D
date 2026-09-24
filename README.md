@@ -4,8 +4,10 @@ Kit de démarrage : une app **GPUI** (chrome blanc) avec un **moteur 3D** derri�
 un seul device GPU partagé entre l'UI
 et la 3D, zéro copie, et le chrome n'est **jamais** redessiné pour une trame 3D.
 
-Démo : un cube qui tourne, caméra orbitale (glisser = orbite, molette = zoom),
-compteur FPS.
+**Pour démarrer une app : [`starter/`](starter/src/main.rs)**, un petit éditeur de scène
+(cubes 3D, liste, inspecteur, UI translucide sur la 3D) qui applique toutes les règles
+de perf du kit. Les dossiers ci-dessous sont les démos d'intégration par backend (un cube
+qui tourne, caméra orbitale).
 
 | Dossier | Moteur 3D | Backends |
 |---|---|---|
@@ -20,6 +22,7 @@ poignées natives brutes (`MTLDevice`/`MTLCommandQueue`/`MTLTexture`,
 ## Lancer
 
 ```bash
+cargo run -p gpui3d-starter
 cargo run -p gpui-wgpu
 cargo run -p gpui-metal
 cargo run -p gpui-vulkan
@@ -39,6 +42,54 @@ DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib cargo run -p gpui-vulkan
 Le premier lancement après l'installation peut prendre ~30 s (vérification de
 signature de `libMoltenVK.dylib` par macOS), les suivants sont immédiats.
 
+## Starter
+
+`starter/` est le squelette à copier : `engine.rs` (moteur wgpu sur son fil, cubes
+instanciés éclairés, caméra) et `main.rs` (état et vues). Ce qu'il montre :
+
+- **État dans des entités** : un `Object` par cube, un `Model` qui les liste. L'UI publie
+  un instantané au moteur (`Shared::publish`) quand la scène change ; le moteur ne
+  renvoie ses instances au GPU que sur une nouvelle version.
+- **Une vue `.cached()` par panneau et par ligne de liste** (`uniform_list` de vues
+  `Row`). Sélectionner ou modifier un objet ne reconstruit que ses lignes et
+  l'inspecteur ; défiler rejoue les lignes translatées.
+- **UI translucide au-dessus de la 3D** : une image 3D ne redessine jamais l'UI, et
+  l'UI immobile n'est pas renvoyée au GPU. Mesuré : au repos, ~59 compositions/s pour
+  2 vues reconstruites/s (le compteur fps).
+- **Gestes caméra sans `notify`** : glisser dans la vue = orbite (le glisser continue
+  au-dessus des panneaux), molette = zoom.
+
+Pour aller plus loin : sélection par clic dans la 3D (lancer de rayon), champs de
+saisie (gpui-component `Input`), sauvegarde de la scène.
+
+## gpui-component
+
+[`vendor/gpui-component`](vendor/gpui-component) (fork longbridge, adapté à ce GPUI) est
+disponible mais **pas utilisé par le starter**. Il apporte ce qu'on ne réécrit pas en
+une après-midi : éditeur de texte (`input` : IME, sélection, presse-papiers, annuler,
+coloration), `table` et listes virtualisées, `dock` / panneaux redimensionnables, `tree`,
+`select`, menus et menus contextuels, `popover` / `tooltip` / `dialog` / `notification` /
+`sheet`, sélecteurs de date et de couleur, graphiques, et un système de thèmes.
+
+Coût mesuré (`BENCH_WIDGETS=component`, mêmes lignes de mail qu'en GPUI pur, sans vsync) :
+**+13 % d'instructions (−8 % de fps) quand tout se reconstruit à chaque image, +5 % (−4 %)
+avec des lignes en vues `.cached()`**, aucun pic. L'écart vient de ce que les composants
+dessinent en plus (+38 % d'éléments, +65 % de quads : bordures, fonds, conteneurs), pas
+d'un coût par image caché. Points d'attention : racine `gpui_component::Root` obligatoire
+(calques), `gpui_component::init(cx)`, un `Input` focalisé re-rend sa vue toutes les
+~500 ms (curseur), dépendances lourdes à compiler (tree-sitter, syntect, ropey…).
+
+Règle : composants pour ce qui est complexe (saisie, tables, dock, menus, dialogues),
+GPUI pur ou vues `.cached()` pour ce qui se répète (lignes de liste, grilles). Pour
+l'ajouter à une crate :
+
+```toml
+gpui-component = { path = "../vendor/gpui-component/crates/ui" }
+```
+
+puis `gpui_component::init(cx)` au démarrage et la vue racine enveloppée dans
+`gpui_component::Root::new(vue, window, cx)`.
+
 ## Architecture
 
 ```
@@ -46,8 +97,12 @@ shell/            chrome GPUI + caméra + fil de rendu, commun aux trois moteurs
 GPUI-WGPU/        moteur wgpu (WGSL)
 GPUI-METAL/       moteur Metal natif (MSL)
 GPUI-VULKAN/      moteur Vulkan natif (GLSL compilé en SPIR-V par build.rs)
-vendor/wgpui      fork GPUI (gpui-ce / WGPUI) + patchs « GPUI-3D »
-vendor/priority-threadpool   copie corrigée (timers GPUI)
+starter/          app de démarrage (éditeur de scène)
+bench/            banc de performance (défilement, overlay 3D, composants)
+vendor/           forks — provenance : vendor/FORKS.md
+  wgpui/          GPUI (Zed → gpui-ce → WGPUI) + patchs GPUI-3D
+  gpui-component/ composants (longbridge) adaptés à ce GPUI
+  priority-threadpool/  pool de fils (timers GPUI), course corrigée
 ```
 
 La recette :
@@ -85,13 +140,17 @@ La recette :
 - `PRIMITIVE_INDEX` n'est plus exigé : aucun shader WGPUI ne l'utilise et MoltenVK
   ne l'expose pas.
 
-Chercher `GPUI-3D` dans `vendor/wgpui` pour rebaser ces patchs.
+Provenance des forks, révisions, licences et liste complète des patchs :
+[`vendor/FORKS.md`](vendor/FORKS.md). Ces forks sont entretenus ici ; chercher `GPUI-3D`
+et `Compat` dans `vendor/wgpui` avant d'y reprendre un correctif amont.
 
 ## Démarrer une app
 
-Copier le dossier du moteur voulu, remplacer `CUBE_*` et le shader, garder le
-`Renderer` : `new(surface)` crée les ressources, `render(surface, scene)` encode une
-trame et la publie. L'UI se compose dans `shell/src/lib.rs` (`Shell::render`).
+Copier `starter/` et l'adapter : le moteur (`engine.rs`) s'échange contre le vôtre tant
+qu'il garde le contrat (rendre sur son fil dans la `WgpuSurface`, lire l'instantané
+publié par l'UI). Pour un moteur Metal ou Vulkan natif, reprendre `GPUI-METAL` ou
+`GPUI-VULKAN` : `Renderer::new(surface)` crée les ressources, `render(surface, scene)`
+encode une trame et la publie.
 
 ## Performance : défilement continu (`bench/`)
 
