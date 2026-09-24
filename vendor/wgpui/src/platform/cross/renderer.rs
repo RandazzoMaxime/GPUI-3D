@@ -129,6 +129,13 @@ fn sprite_texture_group(
     group
 }
 
+fn skip_same_scene_upload_enabled() -> bool {
+    static ENABLED: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+        std::env::var("GPUI_SKIP_SAME_SCENE_UPLOAD").map_or(true, |v| v != "0")
+    });
+    *ENABLED
+}
+
 /// GPUI-3D : buffer de `GpuSpriteExtra` ; jamais vide, le binding l'exige.
 fn sprite_extras_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
@@ -2402,6 +2409,8 @@ pub struct WgpuRenderer {
     slab_group_cache: SlabGroupCache,
     /// GPUI-3D : `Scene::sprite_extras` (dégradés, transformations) pour le shader compact.
     sprite_extras_buffer: wgpu::Buffer,
+    /// GPUI-3D : génération de la dernière scène dont ce renderer a envoyé les instances.
+    uploaded_generation: u64,
     /// GPUI-3D : bind group « page d'atlas + échantillonneur » par page, au lieu d'un par
     /// lot de sprites et par trame. Clé : la vue, recréée quand la page l'est.
     sprite_texture_groups: Vec<(wgpu::TextureView, wgpu::BindGroup)>,
@@ -2682,6 +2691,7 @@ impl WgpuRenderer {
             slab_buffers,
             slab_group_cache: SlabGroupCache::default(),
             sprite_extras_buffer: sprite_extras_buffer(&context.device, 64),
+            uploaded_generation: 0,
             sprite_texture_groups: Vec::new(),
             slab_upload_scratch: Vec::new(),
             transform_scratch: Vec::new(),
@@ -3283,145 +3293,162 @@ impl WgpuRenderer {
                 self.uploaded_globals = Some(globals);
             }
 
-            if !scene.quads.is_empty() {
-                let data = bytemuck::cast_slice(&scene.quads);
-                ensure_buffer_size(
-                    &self.context.device,
-                    &self.context.quads_buffer,
-                    data.len() as u64,
-                    "Quads Buffer",
-                    wgpu::BufferUsages::VERTEX
-                        | wgpu::BufferUsages::COPY_DST
-                        | wgpu::BufferUsages::STORAGE,
-                );
-                self.context
-                    .queue
-                    .write_buffer(&self.context.quads_buffer.lock(), 0, data);
-            }
-            if !scene.shadows.is_empty() {
-                let data = bytemuck::cast_slice(&scene.shadows);
-                ensure_buffer_size(
-                    &self.context.device,
-                    &self.context.shadows_buffer,
-                    data.len() as u64,
-                    "Shadows Buffer",
-                    wgpu::BufferUsages::VERTEX
-                        | wgpu::BufferUsages::COPY_DST
-                        | wgpu::BufferUsages::STORAGE,
-                );
-                self.context
-                    .queue
-                    .write_buffer(&self.context.shadows_buffer.lock(), 0, data);
-            }
-            if !scene.backdrop_filters.is_empty() {
-                let data = bytemuck::cast_slice(&scene.backdrop_filters);
-                ensure_buffer_size(
-                    &self.context.device,
-                    &self.context.backdrop_filters_buffer,
-                    data.len() as u64,
-                    "Backdrop Filters Buffer",
-                    wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                );
-                self.context.queue.write_buffer(
-                    &self.context.backdrop_filters_buffer.lock(),
-                    0,
-                    data,
-                );
-            }
-            if !scene.underlines.is_empty() {
-                let data = bytemuck::cast_slice(&scene.underlines);
-                ensure_buffer_size(
-                    &self.context.device,
-                    &self.context.underlines_buffer,
-                    data.len() as u64,
-                    "Underlines Buffer",
-                    wgpu::BufferUsages::VERTEX
-                        | wgpu::BufferUsages::COPY_DST
-                        | wgpu::BufferUsages::STORAGE,
-                );
-                self.context.queue.write_buffer(
-                    &self.context.underlines_buffer.lock(),
-                    0,
-                    data,
-                );
-            }
-            if !scene.monochrome_sprites.is_empty() {
-                let data = bytemuck::cast_slice(&scene.monochrome_sprites);
-                ensure_buffer_size(
-                    &self.context.device,
-                    &self.context.mono_sprites_buffer,
-                    data.len() as u64,
-                    "Monosprites Buffer",
-                    wgpu::BufferUsages::VERTEX
-                        | wgpu::BufferUsages::COPY_DST
-                        | wgpu::BufferUsages::STORAGE,
-                );
-                self.context.queue.write_buffer(
-                    &self.context.mono_sprites_buffer.lock(),
-                    0,
-                    data,
-                );
-            }
-            if !scene.sprite_extras.is_empty() {
-                let data: &[u8] = bytemuck::cast_slice(&scene.sprite_extras);
-                if self.sprite_extras_buffer.size() < data.len() as u64 {
-                    self.sprite_extras_buffer = sprite_extras_buffer(
+            // GPUI-3D : la même scène redessinée (seule une surface 3D a changé) porte les
+            // mêmes primitives : les buffers les contiennent déjà, sauf si une autre fenêtre du
+            // même contexte y a écrit entre-temps. `GPUI_SKIP_SAME_SCENE_UPLOAD=0` : toujours.
+            let me = self as *const Self as usize;
+            let previous_owner = self
+                .context
+                .instance_upload_owner
+                .swap(me, std::sync::atomic::Ordering::AcqRel);
+            let same_scene = skip_same_scene_upload_enabled()
+                && scene.generation != 0
+                && scene.generation == self.uploaded_generation
+                && previous_owner == me;
+            if same_scene {
+                crate::render_stats::count("upload: same scene skipped");
+            } else {
+                if !scene.quads.is_empty() {
+                    let data = bytemuck::cast_slice(&scene.quads);
+                    ensure_buffer_size(
                         &self.context.device,
-                        scene.sprite_extras.len().next_power_of_two(),
+                        &self.context.quads_buffer,
+                        data.len() as u64,
+                        "Quads Buffer",
+                        wgpu::BufferUsages::VERTEX
+                            | wgpu::BufferUsages::COPY_DST
+                            | wgpu::BufferUsages::STORAGE,
+                    );
+                    self.context
+                        .queue
+                        .write_buffer(&self.context.quads_buffer.lock(), 0, data);
+                }
+                if !scene.shadows.is_empty() {
+                    let data = bytemuck::cast_slice(&scene.shadows);
+                    ensure_buffer_size(
+                        &self.context.device,
+                        &self.context.shadows_buffer,
+                        data.len() as u64,
+                        "Shadows Buffer",
+                        wgpu::BufferUsages::VERTEX
+                            | wgpu::BufferUsages::COPY_DST
+                            | wgpu::BufferUsages::STORAGE,
+                    );
+                    self.context
+                        .queue
+                        .write_buffer(&self.context.shadows_buffer.lock(), 0, data);
+                }
+                if !scene.backdrop_filters.is_empty() {
+                    let data = bytemuck::cast_slice(&scene.backdrop_filters);
+                    ensure_buffer_size(
+                        &self.context.device,
+                        &self.context.backdrop_filters_buffer,
+                        data.len() as u64,
+                        "Backdrop Filters Buffer",
+                        wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                    );
+                    self.context.queue.write_buffer(
+                        &self.context.backdrop_filters_buffer.lock(),
+                        0,
+                        data,
                     );
                 }
-                self.context.queue.write_buffer(&self.sprite_extras_buffer, 0, data);
-            }
-            if !scene.polychrome_sprites.is_empty() {
-                let data = bytemuck::cast_slice(&scene.polychrome_sprites);
-                ensure_buffer_size(
-                    &self.context.device,
-                    &self.context.poly_sprites_buffer,
-                    data.len() as u64,
-                    "Poly Sprites Buffer",
-                    wgpu::BufferUsages::VERTEX
-                        | wgpu::BufferUsages::COPY_DST
-                        | wgpu::BufferUsages::STORAGE,
-                );
-                self.context.queue.write_buffer(
-                    &self.context.poly_sprites_buffer.lock(),
-                    0,
-                    data,
-                );
-            }
+                if !scene.underlines.is_empty() {
+                    let data = bytemuck::cast_slice(&scene.underlines);
+                    ensure_buffer_size(
+                        &self.context.device,
+                        &self.context.underlines_buffer,
+                        data.len() as u64,
+                        "Underlines Buffer",
+                        wgpu::BufferUsages::VERTEX
+                            | wgpu::BufferUsages::COPY_DST
+                            | wgpu::BufferUsages::STORAGE,
+                    );
+                    self.context.queue.write_buffer(
+                        &self.context.underlines_buffer.lock(),
+                        0,
+                        data,
+                    );
+                }
+                if !scene.monochrome_sprites.is_empty() {
+                    let data = bytemuck::cast_slice(&scene.monochrome_sprites);
+                    ensure_buffer_size(
+                        &self.context.device,
+                        &self.context.mono_sprites_buffer,
+                        data.len() as u64,
+                        "Monosprites Buffer",
+                        wgpu::BufferUsages::VERTEX
+                            | wgpu::BufferUsages::COPY_DST
+                            | wgpu::BufferUsages::STORAGE,
+                    );
+                    self.context.queue.write_buffer(
+                        &self.context.mono_sprites_buffer.lock(),
+                        0,
+                        data,
+                    );
+                }
+                if !scene.sprite_extras.is_empty() {
+                    let data: &[u8] = bytemuck::cast_slice(&scene.sprite_extras);
+                    if self.sprite_extras_buffer.size() < data.len() as u64 {
+                        self.sprite_extras_buffer = sprite_extras_buffer(
+                            &self.context.device,
+                            scene.sprite_extras.len().next_power_of_two(),
+                        );
+                    }
+                    self.context.queue.write_buffer(&self.sprite_extras_buffer, 0, data);
+                }
+                if !scene.polychrome_sprites.is_empty() {
+                    let data = bytemuck::cast_slice(&scene.polychrome_sprites);
+                    ensure_buffer_size(
+                        &self.context.device,
+                        &self.context.poly_sprites_buffer,
+                        data.len() as u64,
+                        "Poly Sprites Buffer",
+                        wgpu::BufferUsages::VERTEX
+                            | wgpu::BufferUsages::COPY_DST
+                            | wgpu::BufferUsages::STORAGE,
+                    );
+                    self.context.queue.write_buffer(
+                        &self.context.poly_sprites_buffer.lock(),
+                        0,
+                        data,
+                    );
+                }
 
-            // Build flat vertex array for all paths (color + content mask baked per-vertex)
-            let mut flat_path_vertices: Vec<GpuPathVertex> = Vec::new();
-            for path in &scene.paths {
-                let color = path.color.solid;
-                let cm = &path.content_mask.bounds;
-                let cm_origin = [cm.origin.x.0, cm.origin.y.0];
-                let cm_size = [cm.size.width.0, cm.size.height.0];
-                for vertex in &path.vertices {
-                    flat_path_vertices.push(GpuPathVertex {
-                        xy_position: [vertex.xy_position.x.0, vertex.xy_position.y.0],
-                        st_position: [vertex.st_position.x, vertex.st_position.y],
-                        hsla: [color.h, color.s, color.l, color.a],
-                        content_mask_origin: cm_origin,
-                        content_mask_size: cm_size,
-                    });
+                // Build flat vertex array for all paths (color + content mask baked per-vertex)
+                let mut flat_path_vertices: Vec<GpuPathVertex> = Vec::new();
+                for path in &scene.paths {
+                    let color = path.color.solid;
+                    let cm = &path.content_mask.bounds;
+                    let cm_origin = [cm.origin.x.0, cm.origin.y.0];
+                    let cm_size = [cm.size.width.0, cm.size.height.0];
+                    for vertex in &path.vertices {
+                        flat_path_vertices.push(GpuPathVertex {
+                            xy_position: [vertex.xy_position.x.0, vertex.xy_position.y.0],
+                            st_position: [vertex.st_position.x, vertex.st_position.y],
+                            hsla: [color.h, color.s, color.l, color.a],
+                            content_mask_origin: cm_origin,
+                            content_mask_size: cm_size,
+                        });
+                    }
+                }
+                if !flat_path_vertices.is_empty() {
+                    let data = bytemuck::cast_slice(&flat_path_vertices);
+                    ensure_buffer_size(
+                        &self.context.device,
+                        &self.context.paths_vertices_buffer,
+                        data.len() as u64,
+                        "Path Vertices Buffer",
+                        wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                    );
+                    self.context.queue.write_buffer(
+                        &self.context.paths_vertices_buffer.lock(),
+                        0,
+                        data,
+                    );
                 }
             }
-            if !flat_path_vertices.is_empty() {
-                let data = bytemuck::cast_slice(&flat_path_vertices);
-                ensure_buffer_size(
-                    &self.context.device,
-                    &self.context.paths_vertices_buffer,
-                    data.len() as u64,
-                    "Path Vertices Buffer",
-                    wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                );
-                self.context.queue.write_buffer(
-                    &self.context.paths_vertices_buffer.lock(),
-                    0,
-                    data,
-                );
-            }
+            self.uploaded_generation = scene.generation;
 
             // Slab span resolution happens inside the upload timer's scope: it is
             // exactly the per-frame upload work, and clean layers resolve here

@@ -142,7 +142,7 @@ pub fn run<R: Renderer>(label: &'static str, backends: Backends) {
     });
 }
 
-fn spawn_render_thread<R: Renderer>(
+pub fn spawn_render_thread<R: Renderer>(
     surface: WgpuSurfaceHandle,
     camera: Arc<Mutex<OrbitCamera>>,
     frames: Arc<AtomicU64>,

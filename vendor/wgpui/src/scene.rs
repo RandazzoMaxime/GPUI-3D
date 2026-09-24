@@ -141,6 +141,9 @@ pub(crate) struct Scene {
     pub(crate) layer_slab_spans: Vec<LayerSlabSpan>,
     /// GPUI-3D : emprises en cours d'accumulation (voir [`Scene::begin_extent`]).
     extent_stack: Vec<Option<Bounds<ScaledPixels>>>,
+    /// GPUI-3D : numéro unique posé par [`Scene::finish`]. Deux dessins de la même
+    /// génération portent les mêmes primitives (voir `WgpuRenderer::uploaded_generation`).
+    pub(crate) generation: u64,
 }
 
 impl Default for Scene {
@@ -168,6 +171,7 @@ impl Default for Scene {
             surfaces: Vec::new(),
             layer_slab_spans: Vec::new(),
             extent_stack: Vec::new(),
+            generation: 0,
         }
     }
 }
@@ -929,6 +933,8 @@ impl Scene {
     }
 
     pub fn finish(&mut self) {
+        static GENERATIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        self.generation = GENERATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         profiling::scope!("wgpui: scene finish");
         let _t = crate::render_stats::scope("frame: scene finish");
         debug_assert_eq!(

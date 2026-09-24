@@ -115,11 +115,15 @@ Patchs `GPUI-3D` du fork (chacun désactivable pour comparer) :
 | `GPUI_VIEW_TRANSLATE` | une vue `.cached()` déplacée ou recoupée est rejouée translatée au lieu d'être reconstruite (`0` : amont, `rebuild` : référence de parité) |
 | `GPUI_BLOCK_REPLAY` | une plage rejouée réserve un seul créneau dans le `BoundsTree` au lieu d'une insertion par primitive |
 | `GPUI_SORT_CACHED` | tri des primitives par paires (clé, indice) au lieu de déplacer chaque struct O(log n) fois |
+| `GPUI_SKIP_SAME_SCENE_UPLOAD` | quand seule une surface 3D a changé, la scène UI (inchangée) n'est pas renvoyée au GPU à chaque image |
 | `GPUI_BIND_GROUP_CACHE` | bind group de page d'atlas gardé d'une trame à l'autre au lieu d'un par lot de sprites |
 
 Sans interrupteur : glyphes au format GPU compact (88 octets au lieu de 168, dégradés et
 transformations dans une table annexe), `DecorationRuns` à 2 runs en place au lieu de 32
 (une ligne de texte pesait ~5 Ko), `LineWrapper` en `Box` et pris seulement pour tronquer.
+`BENCH_MODE=overlay` : cube 3D plein écran derrière l'UI (`BENCH_UI=opaque|alpha|opacity|glass|none`,
+`BENCH_3D_HZ`). L'UI n'est jamais reconstruite pour une image 3D ; immobile, elle ne coûte plus
+que ~0,07 ms par image (renvoi évité), la transparence ne coûte rien au CPU, le verre flouté ~+20 %.
 `GPUI_PRESENT_MODE=immediate` : fps débloqués, sans le plafond de 250 Hz de la boucle.
 
 Le banc rapporte aussi la régularité : intervalles entre trames (`p50/p95/p99/max_ms`,
