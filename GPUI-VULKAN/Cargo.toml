@@ -1,0 +1,15 @@
+[package]
+name = "gpui-vulkan"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gpui3d-shell.workspace = true
+bytemuck.workspace = true
+# Vulkan natif. Aucune dépendance wgpu : GPUI ne fournit que des poignées brutes.
+ash = "0.38"
+
+[build-dependencies]
+# Compilateur hors ligne GLSL → SPIR-V (remplaçable par glslc / shaderc).
+# `wgsl-in` : naga 30 ne compile pas `glsl-in` seul (module interpolator gaté).
+naga = { version = "30", features = ["glsl-in", "wgsl-in", "spv-out"] }

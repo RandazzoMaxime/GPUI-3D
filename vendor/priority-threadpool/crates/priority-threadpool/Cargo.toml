@@ -1,0 +1,8 @@
+[package]
+name = "priority-threadpool"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+async-task = "4.7.1"
+lockfree.workspace = true

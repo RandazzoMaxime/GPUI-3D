@@ -1,0 +1,80 @@
+# GPUI-3D
+
+Kit de démarrage : une app **GPUI** (chrome blanc) avec un **moteur 3D** derrière,
+un seul device GPU partagé entre l'UI
+et la 3D, zéro copie, et le chrome n'est **jamais** redessiné pour une trame 3D.
+
+Démo : un cube qui tourne, caméra orbitale (glisser = orbite, molette = zoom),
+compteur FPS.
+
+| Dossier | Moteur 3D | Backends |
+|---|---|---|
+| [`GPUI-WGPU`](GPUI-WGPU/src/main.rs) | wgpu | tous ceux de wgpu : Metal, Vulkan, DX12, GL (`WGPU_BACKEND=…`) |
+| [`GPUI-METAL`](GPUI-METAL/src/metal_cube.rs) | Metal natif (objc2-metal, MSL) | Metal — macOS |
+| [`GPUI-VULKAN`](GPUI-VULKAN/src/main.rs) | Vulkan natif (ash, GLSL → SPIR-V) | Vulkan — Windows, Linux, macOS via MoltenVK |
+
+Les moteurs Metal et Vulkan **ne dépendent pas de wgpu** : ils reçoivent de GPUI des
+poignées natives brutes (`MTLDevice`/`MTLCommandQueue`/`MTLTexture`,
+`VkInstance`/`VkDevice`/`VkQueue`/`VkImage`) et font tout le reste avec l'API.
+
+## Lancer
+
+```bash
+cargo run -p gpui-wgpu
+cargo run -p gpui-metal
+cargo run -p gpui-vulkan
+```
+
+`WGPU_BACKEND=vulkan cargo run -p gpui-wgpu` force un backend wgpu. Sur macOS,
+Vulkan exige MoltenVK et le chargeur : `brew install molten-vk vulkan-loader`.
+
+## Architecture
+
+```
+shell/            chrome GPUI + caméra + fil de rendu, commun aux trois moteurs
+GPUI-WGPU/        moteur wgpu (WGSL)
+GPUI-METAL/       moteur Metal natif (MSL)
+GPUI-VULKAN/      moteur Vulkan natif (GLSL compilé en SPIR-V par build.rs)
+vendor/wgpui      fork GPUI (gpui-ce / WGPUI) + patchs « GPUI-3D »
+vendor/priority-threadpool   copie corrigée (timers GPUI)
+```
+
+La recette :
+
+1. **Un device.** WGPUI crée le device de l'UI ; `run::<Moteur>(label, backends)`
+   choisit son adaptateur. Le moteur rend sur ce même device.
+2. **Une surface triple-buffer** (`window.create_wgpu_surface`) : le moteur rend
+   dans le tampon arrière, le compositeur échantillonne le tampon affiché. Pas de
+   readback, pas de copie.
+3. **Un fil de rendu dédié** (`shell::spawn_render_thread`), cadencé sur le
+   rafraîchissement de l'écran par échéances absolues, `submit_guard` tenu pendant
+   l'encodage et la soumission.
+4. **Publication sans redessin du chrome** : `present_synced_silent` (wgpu) ou
+   `swap_buffers` (natif), puis `request_window_redraw` ⇒ la fenêtre recompose la
+   scène en cache. Jamais `present_synced` ni `cx.notify()` par trame : les deux
+   forcent un dessin complet de l'UI.
+5. **Les gestes ne notifient pas** : la caméra est un `Arc<Mutex<_>>` écrit par les
+   handlers souris et relu par le fil de rendu.
+
+### Contrat natif (patchs `GPUI-3D` du fork)
+
+`WgpuSurfaceHandle` gagne `native_device()`, `native_back_buffer()` et
+`native_queue_lock()` ([`vendor/wgpui/src/elements/wgpu_surface.rs`](vendor/wgpui/src/elements/wgpu_surface.rs)) :
+
+- **Metal** : même `MTLCommandQueue` que le compositeur ⇒ ordre garanti, textures
+  « tracked » ⇒ aucun fence. On commit puis `swap_buffers()`.
+- **Vulkan** : `VkQueue` exige une synchronisation externe ⇒ tout `vkQueueSubmit`
+  se fait sous `native_queue_lock()` (le compositeur le prend aussi). Le tampon
+  arrive et repart en `SHADER_READ_ONLY_OPTIMAL` ; les dépendances de subpass
+  d'entrée/sortie portent la synchronisation avec le compositeur.
+- Les tampons sont initialisés à leur création (sinon wgpu les jugerait vierges et
+  les effacerait avant de les échantillonner).
+- `adapter_selector` est honoré aussi sur macOS (choisir Metal ou Vulkan/MoltenVK).
+
+Chercher `GPUI-3D` dans `vendor/wgpui` pour rebaser ces patchs.
+
+## Démarrer une app
+
+Copier le dossier du moteur voulu, remplacer `CUBE_*` et le shader, garder le
+`Renderer` : `new(surface)` crée les ressources, `render(surface, scene)` encode une
+trame et la publie. L'UI se compose dans `shell/src/lib.rs` (`Shell::render`).

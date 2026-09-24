@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WGPUI WASM Hello World</title>
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #1a1a2e;
+        }
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+</head>
+<body>
+    <script type="module">
+        import init from './pkg/gpui_wasm_hello_world.js';
+        try {
+            await init();
+        } catch (e) {
+            // winit uses throw on WASM for control-flow purposes.
+            // This is not an actual error — the event loop is running.
+            if (String(e).includes("exceptions for control flow")) {
+                console.log("Winit event loop running (expected throw)");
+            } else {
+                console.error("WASM init error:", e);
+            }
+        }
+    </script>
+</body>
+</html>
