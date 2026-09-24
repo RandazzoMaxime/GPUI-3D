@@ -25,8 +25,19 @@ cargo run -p gpui-metal
 cargo run -p gpui-vulkan
 ```
 
-`WGPU_BACKEND=vulkan cargo run -p gpui-wgpu` force un backend wgpu. Sur macOS,
-Vulkan exige MoltenVK et le chargeur : `brew install molten-vk vulkan-loader`.
+`WGPU_BACKEND=vulkan cargo run -p gpui-wgpu` force un backend wgpu (par défaut :
+Metal sur macOS). Le bandeau affiche le moteur et l'API réelle du device.
+
+Vulkan sur macOS exige MoltenVK et le chargeur, que `dlopen` ne trouve pas seul
+dans Homebrew :
+
+```bash
+brew install molten-vk vulkan-loader
+DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib cargo run -p gpui-vulkan
+```
+
+Le premier lancement après l'installation peut prendre ~30 s (vérification de
+signature de `libMoltenVK.dylib` par macOS), les suivants sont immédiats.
 
 ## Architecture
 
@@ -69,7 +80,10 @@ La recette :
   d'entrée/sortie portent la synchronisation avec le compositeur.
 - Les tampons sont initialisés à leur création (sinon wgpu les jugerait vierges et
   les effacerait avant de les échantillonner).
-- `adapter_selector` est honoré aussi sur macOS (choisir Metal ou Vulkan/MoltenVK).
+- `adapter_selector` est honoré aussi sur macOS (choisir Metal ou Vulkan/MoltenVK) ;
+  sans sélecteur, Metal est préféré à MoltenVK.
+- `PRIMITIVE_INDEX` n'est plus exigé : aucun shader WGPUI ne l'utilise et MoltenVK
+  ne l'expose pas.
 
 Chercher `GPUI-3D` dans `vendor/wgpui` pour rebaser ces patchs.
 

@@ -63,7 +63,6 @@ pub fn enumerate_qualifying_adapters() -> Vec<wgpu::Adapter> {
     });
     let required_features = wgpu::Features::TEXTURE_BINDING_ARRAY
         | wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING
-        | wgpu::Features::PRIMITIVE_INDEX
         | wgpu::Features::INDIRECT_FIRST_INSTANCE;
     // Sur macOS ces features sont optionnelles à la création du device
     // (voir `WgpuContext::new`) : ne pas sur-filtrer l'énumération.
@@ -156,10 +155,10 @@ impl WgpuContext {
         #[cfg(not(target_family = "wasm"))]
         {
             // Features WGPUI itself needs for its rendering pipeline.
+            // GPUI-3D : PRIMITIVE_INDEX retiré — aucun shader ne l'utilise, et MoltenVK ne l'a pas.
             let wgpui_features = wgpu::Features::TEXTURE_BINDING_ARRAY
                 | wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING
-                | wgpu::Features::PRIMITIVE_INDEX
-                | wgpu::Features::INDIRECT_FIRST_INSTANCE;
+                        | wgpu::Features::INDIRECT_FIRST_INSTANCE;
 
             let required_features = wgpui_features | options.additional_features;
 
@@ -187,7 +186,13 @@ impl WgpuContext {
                     Some(index) if index < qualifying.len() => Some(qualifying.swap_remove(index)),
                     _ => qualifying
                         .into_iter()
-                        .max_by_key(|adapter| adapter.features().contains(optional_features)),
+                        // GPUI-3D : à égalité, Metal plutôt que Vulkan/MoltenVK.
+                        .max_by_key(|adapter| {
+                            (
+                                adapter.features().contains(optional_features),
+                                adapter.get_info().backend == wgpu::Backend::Metal,
+                            )
+                        }),
                 };
                 let adapter = adapter
                     .ok_or_else(|| {

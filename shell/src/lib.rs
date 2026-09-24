@@ -129,7 +129,12 @@ pub fn run<R: Renderer>(label: &'static str, backends: Backends) {
             let frames = Arc::new(AtomicU64::new(0));
             spawn_render_thread::<R>(surface.clone(), camera.clone(), frames.clone(), hz);
             let fps = cx.new(|cx| FpsLabel::new(frames, cx));
-            cx.new(|_| Shell { backend: label, surface, camera, drag_from: Arc::new(Mutex::new(None)), fps })
+            let api = match surface.native_device() {
+                Some(NativeDevice::Metal { .. }) => "Metal",
+                Some(NativeDevice::Vulkan { .. }) => "Vulkan",
+                None => "autre (DX12 / GL)",
+            };
+            cx.new(|_| Shell { backend: label, api, surface, camera, drag_from: Arc::new(Mutex::new(None)), fps })
         })
         .expect("ouverture fenêtre");
         cx.on_window_closed(|cx, _| cx.quit()).detach();
@@ -170,6 +175,7 @@ fn spawn_render_thread<R: Renderer>(
 
 struct Shell {
     backend: &'static str,
+    api: &'static str,
     surface: WgpuSurfaceHandle,
     camera: Arc<Mutex<OrbitCamera>>,
     drag_from: Arc<Mutex<Option<Point<gpui::Pixels>>>>,
@@ -216,6 +222,7 @@ impl Render for Shell {
                             .text_sm()
                             .text_color(rgb(0x6b6b76))
                             .child(format!("moteur : {}", self.backend))
+                            .child(format!("device : {}", self.api))
                             .child(self.fps.clone()),
                     ),
             )
