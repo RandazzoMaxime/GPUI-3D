@@ -817,7 +817,7 @@ mod tests {
         Shadow(&'a Shadow),
         Path(&'a Path<ScaledPixels>),
         Underline(&'a Underline),
-        Mono(&'a MonochromeSprite),
+        Mono(&'a crate::scene::GpuMonochromeSprite),
         Poly(&'a PolychromeSprite),
     }
 
@@ -828,7 +828,10 @@ mod tests {
                 OracleSlot::Shadow(shadow) => shadow_entry(shadow),
                 OracleSlot::Path(path) => path_entry(path),
                 OracleSlot::Underline(underline) => underline_entry(underline),
-                OracleSlot::Mono(sprite) => mono_entry(sprite),
+                OracleSlot::Mono(sprite) => Entry {
+                    kind: SlabKind::MonoSprites,
+                    marker: sprite.color.h as u32,
+                },
                 OracleSlot::Poly(sprite) => poly_entry(sprite),
             }
         }
@@ -996,7 +999,7 @@ mod tests {
                 _ => None,
             })
             .collect();
-        let oracle_mono: Vec<&MonochromeSprite> = expected
+        let oracle_mono: Vec<&crate::scene::GpuMonochromeSprite> = expected
             .iter()
             .filter_map(|slot| match slot {
                 OracleSlot::Mono(sprite) => Some(*sprite),
@@ -1032,13 +1035,26 @@ mod tests {
                 underline.pad = 0;
             },
         );
+        // GPUI-3D : le chemin par défaut range les glyphes en forme compacte ; les slabs
+        // gardent la forme riche. On compare la forme compacte de chaque glyphe empaqueté.
+        let packed_mono: Vec<crate::scene::GpuMonochromeSprite> = packed
+            .mono_sprites
+            .iter()
+            .map(|sprite| crate::scene::GpuMonochromeSprite {
+                order: 0,
+                extra: crate::scene::GpuMonochromeSprite::PLAIN,
+                bounds: sprite.bounds,
+                content_mask: sprite.content_mask,
+                color: sprite.text_color.solid,
+                tile: sprite.tile,
+            })
+            .collect();
         assert_pod_kind(
             "monochrome sprites",
-            &packed.mono_sprites,
+            &packed_mono,
             &oracle_mono,
-            |sprite: &mut MonochromeSprite| {
+            |sprite: &mut crate::scene::GpuMonochromeSprite| {
                 sprite.order = 0;
-                sprite.pad = 0;
             },
         );
         assert_pod_kind(

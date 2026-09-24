@@ -1252,7 +1252,11 @@ impl winit::application::ApplicationHandler<CrossEvent> for AppState {
                 continue;
             }
             let last = window.0.state.last_idle_redraw_requested_at.get();
-            if last.is_none_or(|last| now.duration_since(last) >= IDLE_POLL_INTERVAL) {
+            // GPUI-3D : sans vsync (`Immediate`), pas de plafond : la fenêtre qui veut
+            // une trame l'obtient tout de suite. Au repos, `wants` reste faux.
+            let uncapped =
+                crate::present_mode::window_present_mode() == crate::WindowPresentMode::Immediate;
+            if uncapped || last.is_none_or(|last| now.duration_since(last) >= IDLE_POLL_INTERVAL) {
                 window.0.state.last_idle_redraw_requested_at.set(Some(now));
                 window.window().request_redraw();
             } else if let Some(last) = last {
