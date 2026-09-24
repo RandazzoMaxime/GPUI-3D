@@ -6,6 +6,8 @@
 //! `BENCH_MODE=cached` : panneaux en vues `.cached()` (façon Zed), seule la liste
 //!                       est notifiée.
 
+mod cube;
+
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -176,7 +178,8 @@ fn mail_list(
         offset.set((offset.get() + *SPEED) % max);
         frames.set(frames.get() + 1);
         note_frame();
-        if !pump_root() {
+        // Overlay immobile : seule la 3D demande des images, l'UI n'est jamais notifiée.
+        if !pump_root() && !(overlay_ui().is_some() && *SPEED == 0.0) {
             window.request_animation_frame();
         }
     } else if frames.get() == STOP_AT.unwrap_or(0) {
@@ -195,6 +198,27 @@ fn mail_list(
         .into_any_element()
 }
 
+/// `BENCH_MODE=overlay` : variante de l'UI posée sur la 3D (`BENCH_UI`).
+fn overlay_ui() -> Option<&'static str> {
+    static UI: std::sync::LazyLock<Option<String>> = std::sync::LazyLock::new(|| {
+        (std::env::var("BENCH_MODE").as_deref() == Ok("overlay"))
+            .then(|| std::env::var("BENCH_UI").unwrap_or_else(|_| "alpha".into()))
+    });
+    UI.as_deref()
+}
+
+/// Fond d'un panneau au-dessus de la 3D : opaque, blanc à 70 %, `.opacity(0.7)` sur tout
+/// le panneau, ou verre (blanc à 50 % + flou d'arrière-plan). Hors overlay : rien.
+fn panel(panel: gpui::Div) -> gpui::Div {
+    match overlay_ui() {
+        None => panel,
+        Some("opaque") => panel.bg(rgb(0xffffff)),
+        Some("opacity") => panel.bg(rgb(0xffffff)).opacity(0.7),
+        Some("glass") => panel.bg(hsla(0., 0., 1., 0.5)).backdrop_blur(px(20.)),
+        Some(_) => panel.bg(hsla(0., 0., 1., 0.7)),
+    }
+}
+
 fn sidebar() -> AnyElement {
     const FOLDERS: [&str; 10] = [
         "Boîte de réception", "Favoris", "Envoyés", "Brouillons", "Archives", "Terrain", "Clients",
@@ -207,7 +231,7 @@ fn sidebar() -> AnyElement {
         .flex_col()
         .gap_1()
         .p_3()
-        .bg(rgb(0xf7f7f9))
+        .when(overlay_ui().is_none(), |d| d.bg(rgb(0xf7f7f9)))
         .border_r_1()
         .border_color(rgb(0xe6e6ea))
         .children((0..25).map(|i| {
@@ -305,12 +329,37 @@ fn layout(toolbar: AnyElement, sidebar: AnyElement, list: AnyElement, reader: An
         .size_full()
         .flex()
         .flex_col()
-        .bg(rgb(0xffffff))
+        .when(overlay_ui().is_none(), |d| d.bg(rgb(0xffffff)))
         .text_color(rgb(0x1a1a1f))
-        .child(toolbar)
-        .child(div().flex_1().min_h_0().flex().child(sidebar).child(div().flex_1().h_full().child(list)).child(reader))
-        .child(status)
+        .child(panel(div().w_full()).child(toolbar))
+        .child(
+            div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .child(panel(div().h_full()).child(sidebar))
+                .child(panel(div().flex_1().h_full()).child(list))
+                .child(panel(div().h_full()).child(reader)),
+        )
+        .child(panel(div().w_full()).child(status))
         .into_any_element()
+}
+
+/// 3D plein écran derrière l'UI : le moteur publie sur son fil ; l'UI n'est notifiée
+/// que si elle défile (`BENCH_SPEED` > 0).
+struct Overlay {
+    surface: gpui::WgpuSurfaceHandle,
+    ui: AnyView,
+}
+
+impl Render for Overlay {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .size_full()
+            .relative()
+            .child(gpui::wgpu_surface(self.surface.clone()).absolute().inset_0())
+            .when(overlay_ui() != Some("none"), |d| d.child(div().absolute().inset_0().child(self.ui.clone())))
+    }
 }
 
 struct ListState {
@@ -544,16 +593,19 @@ fn main() {
     let mode = std::env::var("BENCH_MODE").unwrap_or_else(|_| "root".into());
     let secs: f64 = std::env::var("BENCH_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(8.0);
     let frames = Rc::new(Cell::new(0u64));
+    // Images publiées par le moteur 3D (mode overlay) : c'est alors le dénominateur.
+    let frames_3d = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     Application::new().with_assets(Assets).run(move |cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(1400.), px(900.)), cx);
         let options = WindowOptions { window_bounds: Some(WindowBounds::Windowed(bounds)), ..Default::default() };
         let frames_view = frames.clone();
         let frames_root = frames.clone();
         let mode_view = mode.clone();
-        cx.open_window(options, move |_, cx: &mut App| {
+        let frames_3d_view = frames_3d.clone();
+        cx.open_window(options, move |window, cx: &mut App| {
             let view: AnyView = if mode_view == "gallery" {
                 cx.new(|_| Gallery).into()
-            } else if mode_view == "cached" {
+            } else if mode_view == "cached" || mode_view == "overlay" {
                 let list = cx.new(|_| ListView(ListState::new(frames_view)));
                 let view = |f: fn() -> AnyElement, cx: &mut App| AnyView::from(cx.new(|_| Static(f)));
                 cx.new(|cx| CachedMode {
@@ -567,6 +619,27 @@ fn main() {
             } else {
                 cx.new(|_| RootMode(ListState::new(frames_view))).into()
             };
+            let view: AnyView = if mode_view == "overlay" {
+                let scale = window.scale_factor();
+                let vp = window.viewport_size();
+                let surface = window
+                    .create_wgpu_surface(
+                        (f32::from(vp.width) * scale) as u32,
+                        (f32::from(vp.height) * scale) as u32,
+                        gpui3d_shell::SURFACE_FORMAT,
+                    )
+                    .expect("WgpuSurface");
+                let hz = std::env::var("BENCH_3D_HZ").ok().and_then(|v| v.parse().ok()).unwrap_or(60.0);
+                gpui3d_shell::spawn_render_thread::<cube::WgpuCube>(
+                    surface.clone(),
+                    Default::default(),
+                    frames_3d_view.clone(),
+                    hz,
+                );
+                cx.new(|_| Overlay { surface, ui: view }).into()
+            } else {
+                view
+            };
             cx.new(|_| Root(view, frames_root))
         })
         .expect("fenêtre");
@@ -575,13 +648,17 @@ fn main() {
             let warmup = Duration::from_secs(2);
             cx.background_executor().timer(warmup).await;
             FRAME_TIMES.with(|t| *t.borrow_mut() = Some(Vec::with_capacity(1 << 16)));
-            let (t0, cpu0, f0, (i0, c0)) = (Instant::now(), cpu_seconds(), frames.get(), instructions_cycles());
+            let overlay = overlay_ui().is_some();
+            let count = || if overlay { frames_3d.load(std::sync::atomic::Ordering::Relaxed) } else { frames.get() };
+            let main0 = thread_cpu_ns();
+            let (t0, cpu0, f0, (i0, c0)) = (Instant::now(), cpu_seconds(), count(), instructions_cycles());
             cx.background_executor().timer(Duration::from_secs_f64(secs)).await;
-            let (wall, cpu, n) = (t0.elapsed().as_secs_f64(), cpu_seconds() - cpu0, frames.get() - f0);
+            let (wall, cpu, n) = (t0.elapsed().as_secs_f64(), cpu_seconds() - cpu0, count() - f0);
+            let main_ms = (thread_cpu_ns() - main0) as f64 / 1e6 / n.max(1) as f64;
             let (i1, c1) = instructions_cycles();
             let per_frame = |v: u64| v as f64 / n.max(1) as f64 / 1e6;
             println!(
-                "RESULT mode={mode} rows={} translate={} speed={} frames={n} fps={:.1} cpu_pct={:.1} cpu_ms_per_frame={:.3} minstr_per_frame={:.2} mcycles_per_frame={:.2}{}",
+                "RESULT mode={mode} rows={} translate={} speed={} frames={n} fps={:.1} cpu_pct={:.1} cpu_ms_per_frame={:.3} minstr_per_frame={:.2} mcycles_per_frame={:.2} main_ms_per_frame={:.3} ui={}{}",
                 std::env::var("BENCH_ROWS").unwrap_or_else(|_| "0".into()),
                 std::env::var("GPUI_VIEW_TRANSLATE").unwrap_or_else(|_| "1".into()),
                 std::env::var("BENCH_SPEED").unwrap_or_else(|_| "6".into()),
@@ -590,6 +667,8 @@ fn main() {
                 1000.0 * cpu / n.max(1) as f64,
                 per_frame(i1 - i0),
                 per_frame(c1 - c0),
+                main_ms,
+                overlay_ui().unwrap_or("-"),
                 frame_pacing(),
             );
             cx.update(|cx| cx.quit());

@@ -6,3 +6,6 @@ edition = "2024"
 [dependencies]
 gpui.workspace = true
 libc = "0.2"
+gpui3d-shell.workspace = true
+wgpu.workspace = true
+bytemuck.workspace = true
