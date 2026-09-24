@@ -28,6 +28,7 @@
 //! path. Wrong pixels are never shipped silently; a missing panel for one
 //! frame is the documented last resort.
 
+use super::hal::{BufferUsage, Gpu};
 use std::sync::LazyLock;
 
 use collections::{FxHashMap, FxHashSet};
@@ -714,37 +715,30 @@ pub(crate) fn instance_stride(kind: SlabKind) -> u64 {
 const INITIAL_KIND_BUFFER_ELEMENTS: u64 = 1024;
 const INITIAL_TRANSFORM_SLOTS: u32 = 128;
 
-// GPUI-3D : seule partie wgpu du module ; le reste (registre, transforms) est neutre.
-#[cfg(feature = "wgpu")]
-pub(crate) struct SlabGpuBuffers {
-    kinds: [wgpu::Buffer; SlabKind::COUNT],
-    transforms: wgpu::Buffer,
+pub(crate) struct SlabGpuBuffers<G: Gpu> {
+    kinds: [G::Buffer; SlabKind::COUNT],
+    transforms: G::Buffer,
     /// Dynamic-offset stride of one transform slot: `max(alignment, 64)`.
     pub transform_slot_stride: u64,
 }
 
-#[cfg(feature = "wgpu")]
-impl SlabGpuBuffers {
-    pub fn new(device: &wgpu::Device, min_uniform_offset_alignment: u32) -> Self {
+impl<G: Gpu> SlabGpuBuffers<G> {
+    pub fn new(gpu: &G, min_uniform_offset_alignment: u32) -> Self {
         let transform_slot_stride = (min_uniform_offset_alignment as u64)
             .max(std::mem::size_of::<GpuLayerTransform>() as u64);
         let kinds = std::array::from_fn(|index| {
             let kind = SlabKind::ALL[index];
-            device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("layer slab buffer"),
-                size: INITIAL_KIND_BUFFER_ELEMENTS * instance_stride(kind),
-                usage: wgpu::BufferUsages::STORAGE
-                    | wgpu::BufferUsages::COPY_DST
-                    | wgpu::BufferUsages::COPY_SRC,
-                mapped_at_creation: false,
-            })
+            gpu.create_buffer(
+                "layer slab buffer",
+                INITIAL_KIND_BUFFER_ELEMENTS * instance_stride(kind),
+                BufferUsage::STORAGE | BufferUsage::COPY_DST | BufferUsage::COPY_SRC,
+            )
         });
-        let transforms = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("layer slab transforms"),
-            size: transform_slot_stride * INITIAL_TRANSFORM_SLOTS as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let transforms = gpu.create_buffer(
+            "layer slab transforms",
+            transform_slot_stride * INITIAL_TRANSFORM_SLOTS as u64,
+            BufferUsage::UNIFORM | BufferUsage::COPY_DST,
+        );
         SlabGpuBuffers {
             kinds,
             transforms,
@@ -752,50 +746,41 @@ impl SlabGpuBuffers {
         }
     }
 
-    pub fn kind_buffer(&self, kind: SlabKind) -> &wgpu::Buffer {
+    pub fn kind_buffer(&self, kind: SlabKind) -> &G::Buffer {
         &self.kinds[kind.index()]
     }
 
-    pub fn transforms_buffer(&self) -> &wgpu::Buffer {
+    pub fn transforms_buffer(&self) -> &G::Buffer {
         &self.transforms
     }
 
     /// Grow `kind`'s buffer to fit `elements`. Returns whether it was
     /// recreated (contents lost).
-    pub fn ensure_kind_capacity(
-        &mut self,
-        device: &wgpu::Device,
-        kind: SlabKind,
-        elements: u32,
-    ) -> bool {
+    pub fn ensure_kind_capacity(&mut self, gpu: &G, kind: SlabKind, elements: u32) -> bool {
         let needed = elements as u64 * instance_stride(kind);
-        if self.kinds[kind.index()].size() >= needed {
+        if G::buffer_size(&self.kinds[kind.index()]) >= needed {
             return false;
         }
-        self.kinds[kind.index()] = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("layer slab buffer"),
-            size: (needed * 2).max(INITIAL_KIND_BUFFER_ELEMENTS * instance_stride(kind)),
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
+        self.kinds[kind.index()] = gpu.create_buffer(
+            "layer slab buffer",
+            (needed * 2).max(INITIAL_KIND_BUFFER_ELEMENTS * instance_stride(kind)),
+            BufferUsage::STORAGE | BufferUsage::COPY_DST | BufferUsage::COPY_SRC,
+        );
         true
     }
 
     /// Grow the transform uniform to fit `slots`. Returns whether it was
     /// recreated (all slot contents lost).
-    pub fn ensure_transform_capacity(&mut self, device: &wgpu::Device, slots: u32) -> bool {
+    pub fn ensure_transform_capacity(&mut self, gpu: &G, slots: u32) -> bool {
         let needed = self.transform_slot_stride * slots.max(2) as u64;
-        if self.transforms.size() >= needed {
+        if G::buffer_size(&self.transforms) >= needed {
             return false;
         }
-        self.transforms = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("layer slab transforms"),
-            size: needed * 2,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        self.transforms = gpu.create_buffer(
+            "layer slab transforms",
+            needed * 2,
+            BufferUsage::UNIFORM | BufferUsage::COPY_DST,
+        );
         true
     }
 }

@@ -5,9 +5,6 @@
 //! `Absent` (inhabitée) les garde valides quand aucun backend n'est compilé : l'app
 //! démarre alors sans pouvoir ouvrir de fenêtre, avec une erreur explicite.
 
-// Sans aucun backend, tout est inatteignable : paramètres jamais lus, code mort attendu.
-#![cfg_attr(not(feature = "wgpu"), allow(unused_variables, unreachable_code))]
-
 use std::convert::Infallible;
 use std::sync::Arc;
 
@@ -95,7 +92,7 @@ impl GpuContext {
     }
 
     pub(crate) fn new_atlas(&self) -> WindowAtlas {
-        dispatch!(self, GpuContext, context => WindowAtlas::Wgpu(Arc::new(WgpuAtlas::new(context.clone()))))
+        dispatch!(self, GpuContext, context => WindowAtlas::Wgpu(Arc::new(WgpuAtlas::new(context.gpu.clone()))))
     }
 
     /// Renderer d'une fenêtre de `width`×`height` pixels physiques, sur l'atlas de la fenêtre.

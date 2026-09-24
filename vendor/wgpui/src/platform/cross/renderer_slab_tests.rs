@@ -8,6 +8,10 @@
 //! moves a layer without any instance re-upload.
 
 use super::*;
+use crate::platform::cross::shaders::slab_shader_source;
+use wgpu::util::DeviceExt as _;
+
+type G = crate::platform::cross::hal::wgpu::WgpuGpu;
 use crate::Bounds as SceneBounds;
 use crate::{AtlasTile, Quad};
 use crate::Size as SceneSize;
@@ -36,7 +40,7 @@ const SLAB_SHADERS: &[(&str, u32, &str)] = &[
 #[test]
 fn every_slab_shader_parses_and_validates_with_naga() {
     for (name, group, body) in SLAB_SHADERS {
-        let source = slab_shader_source(name, *group, body).into_owned();
+        let source = slab_shader_source(name, *group, body);
         let module = wgpu::naga::front::wgsl::parse_str(&source)
             .unwrap_or_else(|error| panic!("{name} failed to parse: {error:?}"));
         let mut validator = wgpu::naga::valid::Validator::new(
@@ -52,7 +56,7 @@ fn every_slab_shader_parses_and_validates_with_naga() {
 #[test]
 fn vertex_stages_add_the_layer_translate_exactly_once() {
     for (name, group, body) in SLAB_SHADERS {
-        let source = slab_shader_source(name, *group, body).into_owned();
+        let source = slab_shader_source(name, *group, body);
         let vs_end = source.find("@fragment").expect("shader has a fragment stage");
         let vs_part = &source[..vs_end];
         let needle = match *name {
@@ -88,7 +92,7 @@ fn fragment_stages_undo_the_translate_exactly_once_where_world_space_is_reread()
             .iter()
             .find(|(label, _, _)| label == name)
             .expect("known shader");
-        let source = slab_shader_source(name, *group, body).into_owned();
+        let source = slab_shader_source(name, *group, body);
         let fs_part = &source[source.find("@fragment").expect("fragment stage exists")..];
         assert_eq!(
             fs_part.matches("layer_world_position(").count(),
@@ -169,20 +173,21 @@ fn headless_harness() -> Option<PixelHarness> {
                     | wgpu::BufferUsages::UNIFORM,
                 mapped_at_creation: false,
             });
-    let pipelines = WgpuPipelines::new(
-        context.as_ref(),
-        &surface_configuration,
+    let pipelines = Pipelines::<G>::new(
+        context.gpu.as_ref(),
+        surface_configuration.format,
+        surface_configuration.alpha_mode == wgpu::CompositeAlphaMode::PreMultiplied,
         &globals_buffer,
         &color_adjustments_buffer,
     );
-    let atlas = Arc::new(crate::platform::cross::atlas::WgpuAtlas::new(context.clone()));
+    let atlas = Arc::new(crate::platform::cross::atlas::WgpuAtlas::new(context.gpu.clone()));
     let atlas_sampler = context.device.create_sampler(&wgpu::SamplerDescriptor {
         mag_filter: wgpu::FilterMode::Linear,
         min_filter: wgpu::FilterMode::Linear,
         ..Default::default()
     });
     let buffers = slab_gpu::SlabGpuBuffers::new(
-        &context.device,
+        context.gpu.as_ref(),
         context.device.limits().min_uniform_buffer_offset_alignment,
     );
     Some(PixelHarness {
@@ -198,10 +203,10 @@ fn headless_harness() -> Option<PixelHarness> {
 
 struct PixelHarness {
     context: Arc<WgpuContext>,
-    pipelines: WgpuPipelines,
+    pipelines: Pipelines<G>,
     globals_buffer: wgpu::Buffer,
     atlas: Arc<crate::platform::cross::atlas::WgpuAtlas>,
-    buffers: slab_gpu::SlabGpuBuffers,
+    buffers: slab_gpu::SlabGpuBuffers<G>,
     registry: SlabRegistry,
     atlas_sampler: wgpu::Sampler,
 }
@@ -235,7 +240,7 @@ impl PixelHarness {
 
     /// Sync + upload spans exactly like `resolve_slab_spans`, then build the
     /// bind groups needed to draw them.
-    fn prepare_spans(&mut self, scene: &Scene) -> SlabDrawGroups {
+    fn prepare_spans(&mut self, scene: &Scene) -> SlabDrawGroups<G> {
         let mut synced_layers: FxHashSet<LayerKey> = FxHashSet::default();
         for span in &scene.layer_slab_spans {
             if !synced_layers.insert(span.key) {
@@ -282,7 +287,7 @@ impl PixelHarness {
         }
         let transform_bind_group = self.layer_transform_bind_group();
         build_slab_draw_groups(
-            &self.context.device,
+            self.context.gpu.as_ref(),
             &self.pipelines,
             &self.buffers,
             &self.atlas,
@@ -312,12 +317,12 @@ impl PixelHarness {
             ),
         ];
         let usage =
-            wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE;
+            BufferUsage::VERTEX | BufferUsage::COPY_DST | BufferUsage::STORAGE;
         for (buffer, data) in uploads {
             if data.is_empty() {
                 continue;
             }
-            ensure_buffer_size(&self.context.device, buffer, data.len() as u64, "harness", usage);
+            ensure_buffer_size(self.context.gpu.as_ref(), buffer, data.len() as u64, "harness", usage);
             self.context.queue.write_buffer(&buffer.lock(), 0, data);
         }
         let mut flat_path_vertices: Vec<GpuPathVertex> = Vec::new();
@@ -339,11 +344,11 @@ impl PixelHarness {
         if !flat_path_vertices.is_empty() {
             let data = bytemuck::cast_slice(&flat_path_vertices);
             ensure_buffer_size(
-                &self.context.device,
+                self.context.gpu.as_ref(),
                 &self.context.paths_vertices_buffer,
                 data.len() as u64,
                 "harness paths",
-                wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                BufferUsage::STORAGE | BufferUsage::COPY_DST,
             );
             self.context
                 .queue
@@ -393,7 +398,7 @@ impl PixelHarness {
 
     /// Record one frame — legacy batches plus spliced spans — into an
     /// offscreen target and read its pixels back.
-    fn render_and_read_back(&self, scene: &Scene, groups: Option<&SlabDrawGroups>) -> Vec<u8> {
+    fn render_and_read_back(&self, scene: &Scene, groups: Option<&SlabDrawGroups<G>>) -> Vec<u8> {
         let target = self.context.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("pixel test target"),
             size: wgpu::Extent3d {
@@ -1126,7 +1131,7 @@ impl PixelHarness {
     fn render_and_read_back_mode(
         &self,
         scene: &Scene,
-        groups: Option<&SlabDrawGroups>,
+        groups: Option<&SlabDrawGroups<G>>,
         production: bool,
     ) -> (Vec<u8>, usize) {
         let stride = self.buffers.transform_slot_stride;
@@ -1212,26 +1217,26 @@ impl PixelHarness {
                         match batch {
                             PrimitiveBatch::Quads(quads) => {
                                 let count = quads.len() as u32;
-                                state.set_pipeline(
+                                state.set_pipeline::<G>(
                                     &mut pass,
                                     super::DrawPipelineId::Quads,
                                     &self.pipelines.quads_pipeline,
                                 );
-                                state.set_bind_group(
+                                state.set_bind_group::<G>(
                                     &mut pass,
                                     0,
                                     super::BoundGroupId::Globals,
                                     &self.pipelines.globals_bind_group,
                                     &[],
                                 );
-                                state.set_bind_group(
+                                state.set_bind_group::<G>(
                                     &mut pass,
                                     1,
                                     super::BoundGroupId::LegacyBuffer(super::LegacyBuffer::Quads),
                                     &quads_bg,
                                     &[],
                                 );
-                                state.set_bind_group(
+                                state.set_bind_group::<G>(
                                     &mut pass,
                                     2,
                                     super::BoundGroupId::LayerTransform(0),
@@ -1245,19 +1250,19 @@ impl PixelHarness {
                                 let vertex_count: u32 =
                                     paths.iter().map(|p| p.vertices.len() as u32).sum();
                                 if vertex_count > 0 {
-                                    state.set_pipeline(
+                                    state.set_pipeline::<G>(
                                         &mut pass,
                                         super::DrawPipelineId::Paths,
                                         &self.pipelines.paths_pipeline,
                                     );
-                                    state.set_bind_group(
+                                    state.set_bind_group::<G>(
                                         &mut pass,
                                         0,
                                         super::BoundGroupId::Globals,
                                         &self.pipelines.globals_bind_group,
                                         &[],
                                     );
-                                    state.set_bind_group(
+                                    state.set_bind_group::<G>(
                                         &mut pass,
                                         1,
                                         super::BoundGroupId::LegacyBuffer(
@@ -1266,7 +1271,7 @@ impl PixelHarness {
                                         &paths_bg,
                                         &[],
                                     );
-                                    state.set_bind_group(
+                                    state.set_bind_group::<G>(
                                         &mut pass,
                                         2,
                                         super::BoundGroupId::LayerTransform(0),
@@ -1535,10 +1540,10 @@ fn cached_slab_groups_survive_clean_only_frames_and_invalidate_per_buffer() -> a
     };
     let tile = insert_tile(&harness, 11)?;
     let (_, spliced) = build_frames((24., 16.), tile)?;
-    let device = &harness.context.device;
+    let device = harness.context.gpu.as_ref();
 
-    let mut cache = SlabGroupCache::default();
-    let frame_groups = |cache: &mut SlabGroupCache, scene: &Scene| {
+    let mut cache = SlabGroupCache::<G>::default();
+    let frame_groups = |cache: &mut SlabGroupCache<G>, scene: &Scene| {
         cache.frame_groups(
             device,
             &harness.pipelines,

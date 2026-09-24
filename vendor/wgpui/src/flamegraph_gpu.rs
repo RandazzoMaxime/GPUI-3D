@@ -619,7 +619,7 @@ impl DeepCaptureRecorder {
         encoder: &mut wgpu::CommandEncoder,
         buffers: &[(DeepCaptureBufferKind, &wgpu::Buffer)],
         atlas: &crate::platform::cross::atlas::WgpuAtlas,
-        surface_registry: &crate::platform::cross::surface_registry::SurfaceRegistry,
+        surface_registry: &crate::platform::cross::surface_registry::SurfaceRegistry<crate::platform::cross::hal::wgpu::WgpuGpu>,
     ) -> DeepCapturePendingReadback {
         let mut staging = Vec::with_capacity(self.touched_buffers.len());
         for kind in &self.touched_buffers {
@@ -1162,7 +1162,7 @@ mod tests {
         // `PlatformAtlas` trait, so this exercises the exact same
         // allocate/upload path a live app would (rather than reaching into
         // `WgpuAtlas`'s private allocation internals). ---
-        let atlas = crate::platform::cross::atlas::WgpuAtlas::new(context.clone());
+        let atlas = crate::platform::cross::atlas::WgpuAtlas::new(context.gpu.clone());
         let tile_width = 4u32;
         let tile_height = 4u32;
         let tile_bytes: Vec<u8> = (0..(tile_width * tile_height * 4) as u16).map(|value| value as u8).collect();
@@ -1202,7 +1202,7 @@ mod tests {
         let surface_width = 6u32;
         let surface_height = 3u32;
         let surface_format = wgpu::TextureFormat::Rgba8Unorm;
-        let surface_id = context.surface_registry.create(device, surface_width, surface_height, surface_format);
+        let surface_id = context.surface_registry.create(surface_width, surface_height, surface_format);
         let surface_bytes: Vec<u8> = std::iter::repeat_n([255u8, 0, 0, 255], (surface_width * surface_height) as usize)
             .flatten()
             .collect();

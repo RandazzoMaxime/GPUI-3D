@@ -525,7 +525,7 @@ impl PlatformWindow for CrossWindow {
         #[allow(irrefutable_let_patterns)]
         let GpuContext::Wgpu(ctx) = &self.0.gpu else { return None };
         let registry = ctx.surface_registry.clone();
-        let surface_id = registry.create(&ctx.device, width, height, format);
+        let surface_id = registry.create(width, height, format);
 
         // Build the present trigger: sends a CrossEvent to wake the event loop
         // and request a redraw for this window.

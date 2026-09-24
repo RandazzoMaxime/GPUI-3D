@@ -1,7 +1,126 @@
 use parking_lot::Mutex;
 use std::sync::Arc;
 
+use super::hal::{BufferUsage, Gpu};
 use super::surface_registry::SurfaceRegistry;
+#[cfg(feature = "wgpu")]
+use super::hal::wgpu::WgpuGpu;
+
+/// Contexte GPU d'une application : le device (partagé par l'UI et les moteurs 3D) et
+/// les ressources communes à toutes ses fenêtres.
+pub struct RenderContext<G: Gpu> {
+    pub(crate) gpu: Arc<G>,
+
+    // The globals and color-adjustment uniforms are NOT shared here, on
+    // purpose: every window's renderer dedups their uploads against its own
+    // last-written value (`uploaded_globals`), which is only sound if each
+    // window owns the buffer it compares against. Sharing one buffer across
+    // windows let window B's viewport overwrite window A's while A's dedup
+    // guard still said "already uploaded" — A then rendered every frame
+    // against B's viewport size until something re-wrote it, presenting as
+    // shifted/scaled content with hit testing unaffected. They now live on
+    // the renderer, one pair per window.
+    pub(super) quads_buffer: Mutex<G::Buffer>,
+    pub(super) shadows_buffer: Mutex<G::Buffer>,
+    pub(super) backdrop_filters_buffer: Mutex<G::Buffer>,
+    pub(super) underlines_buffer: Mutex<G::Buffer>,
+    pub(super) mono_sprites_buffer: Mutex<G::Buffer>,
+    pub(super) poly_sprites_buffer: Mutex<G::Buffer>,
+    pub(super) paths_vertices_buffer: Mutex<G::Buffer>,
+
+    pub(crate) surface_registry: Arc<SurfaceRegistry<G>>,
+
+    /// Guards swapchain reconfiguration against concurrent queue submission.
+    ///
+    /// `Surface::configure` waits for the device to go idle and fails with
+    /// `GpuWaitTimeout` if anything submits while it waits -- wgpu-core treats a
+    /// non-empty queue after the wait as proof that "another thread is submitting
+    /// at the same time". Because `WgpuSurfaceHandle` hands out clones of this
+    /// device and queue, every external render thread is such a submitter.
+    ///
+    /// External render threads hold a **read** guard across render + submit
+    /// (`WgpuSurfaceHandle::submit_guard`); swapchain configuration holds the
+    /// **write** guard (`Renderer::reconfigure_surface`). Read guards do not block
+    /// each other, so any number of surfaces keep rendering at independent rates;
+    /// only reconfiguration (resize) serializes against them.
+    ///
+    /// The renderer's own submits deliberately do NOT take a read guard: they run
+    /// on the same thread as `configure`, so guarding them would self-deadlock.
+    pub(crate) gpu_submit_lock: Arc<parking_lot::RwLock<()>>,
+}
+
+impl<G: Gpu> std::ops::Deref for RenderContext<G> {
+    type Target = G;
+
+    fn deref(&self) -> &G {
+        &self.gpu
+    }
+}
+
+impl<G: Gpu> RenderContext<G> {
+    pub(crate) fn with_gpu(gpu: G) -> Self {
+        // Phase 4 of the profiling epic (issue #60/#71) reads these seven
+        // fixed buffers back via `copy_buffer_to_buffer` during a triggered
+        // GPU deep capture (see `DeepCaptureBufferKind`), which requires
+        // `COPY_SRC` on the source buffer or wgpu's validator rejects the
+        // encoder outright -- not a soft failure, a hard panic on the first
+        // frame a capture is armed. Add it only when the capture code that
+        // actually needs it is compiled in, so a non-`flamegraph` build's
+        // buffers are byte-for-byte the same as before this fix.
+        let instances = BufferUsage::VERTEX | BufferUsage::COPY_DST | BufferUsage::STORAGE;
+        let storage = BufferUsage::STORAGE | BufferUsage::COPY_DST;
+        #[cfg(feature = "flamegraph")]
+        let (instances, storage) = (instances | BufferUsage::COPY_SRC, storage | BufferUsage::COPY_SRC);
+        // Resized dynamically by ensure_buffer_size() when the initial allocation is exceeded.
+        const INITIAL_SIZE: u64 = 8 * 1024 * 1024;
+        let gpu = Arc::new(gpu);
+        let buffer = |label: &str, usage| Mutex::new(gpu.create_buffer(label, INITIAL_SIZE, usage));
+        Self {
+            quads_buffer: buffer("Quads Buffer", instances),
+            shadows_buffer: buffer("Shadows Buffer", instances),
+            backdrop_filters_buffer: buffer("Backdrop Filters Buffer", storage),
+            underlines_buffer: buffer("Underlines Buffer", instances),
+            mono_sprites_buffer: buffer("Monosprites Buffer", instances),
+            poly_sprites_buffer: buffer("Poly Sprites Buffer", instances),
+            paths_vertices_buffer: buffer("Path Vertices Buffer", storage),
+            surface_registry: Arc::new(SurfaceRegistry::new(gpu.clone())),
+            gpu_submit_lock: Arc::new(parking_lot::RwLock::new(())),
+            gpu,
+        }
+    }
+
+    /// Sum of every fixed-size buffer's size (Phase 3 of the profiling epic,
+    /// issue #59). The globals and color-adjustment uniforms are per-renderer
+    /// (see the struct field comment); they are accounted by the renderer's own
+    /// reporting, not here.
+    #[cfg(feature = "flamegraph")]
+    pub(crate) fn fixed_buffer_memory_usage(&self) -> u64 {
+        [
+            &self.quads_buffer,
+            &self.shadows_buffer,
+            &self.backdrop_filters_buffer,
+            &self.underlines_buffer,
+            &self.mono_sprites_buffer,
+            &self.poly_sprites_buffer,
+            &self.paths_vertices_buffer,
+        ]
+        .into_iter()
+        .map(|buffer| G::buffer_size(&buffer.lock()))
+        .sum()
+    }
+}
+
+#[cfg(feature = "wgpu")]
+pub type WgpuContext = RenderContext<WgpuGpu>;
+
+#[cfg(feature = "wgpu")]
+pub use wgpu_context::*;
+
+#[cfg(feature = "wgpu")]
+mod wgpu_context {
+use parking_lot::Mutex;
+
+use super::{WgpuContext, WgpuGpu};
 
 /// Compat (voir src/compat.rs) : choix d'adaptateur par l'hôte.
 /// Reçoit les infos des adaptateurs APTES (features UI remplies), dans l'ordre
@@ -76,60 +195,6 @@ pub fn enumerate_qualifying_adapters() -> Vec<wgpu::Adapter> {
         .into_iter()
         .filter(|adapter| adapter.features().contains(required_features))
         .collect()
-}
-
-pub struct WgpuContext {
-    pub(super) adapter: wgpu::Adapter,
-    // `pub(crate)`, not `pub(super)` like most of this struct's other
-    // fields: Phase 4b of the profiling epic (issue #72) needs a real
-    // `wgpu::Device`/`wgpu::Queue` alongside a real `WgpuAtlas`/
-    // `SurfaceRegistry` in `flamegraph_gpu.rs`'s own tests (outside
-    // `platform::cross`) to exercise `DeepCaptureRecorder::finish`'s texture
-    // readback end-to-end, the same reason `surface_registry` below is
-    // already `pub(crate)` rather than `pub(super)`.
-    pub(crate) device: wgpu::Device,
-    pub(crate) queue: wgpu::Queue,
-    pub(super) instance: wgpu::Instance,
-
-    // The globals and color-adjustment uniforms are NOT shared here, on
-    // purpose: every window's renderer dedups their uploads against its own
-    // last-written value (`uploaded_globals`), which is only sound if each
-    // window owns the buffer it compares against. Sharing one buffer across
-    // windows let window B's viewport overwrite window A's while A's dedup
-    // guard still said "already uploaded" — A then rendered every frame
-    // against B's viewport size until something re-wrote it, presenting as
-    // shifted/scaled content with hit testing unaffected. They now live on
-    // `WgpuRenderer`, one pair per window.
-    pub(super) quads_buffer: Mutex<wgpu::Buffer>,
-    pub(super) shadows_buffer: Mutex<wgpu::Buffer>,
-    pub(super) backdrop_filters_buffer: Mutex<wgpu::Buffer>,
-    pub(super) underlines_buffer: Mutex<wgpu::Buffer>,
-    pub(super) mono_sprites_buffer: Mutex<wgpu::Buffer>,
-    pub(super) poly_sprites_buffer: Mutex<wgpu::Buffer>,
-    pub(super) paths_vertices_buffer: Mutex<wgpu::Buffer>,
-
-    pub(crate) surface_registry: Arc<SurfaceRegistry>,
-
-    /// Maximum number of frames the GPU can queue ahead before blocking.
-    pub(crate) desired_maximum_frame_latency: u32,
-
-    /// Guards swapchain reconfiguration against concurrent queue submission.
-    ///
-    /// `Surface::configure` waits for the device to go idle and fails with
-    /// `GpuWaitTimeout` if anything submits while it waits -- wgpu-core treats a
-    /// non-empty queue after the wait as proof that "another thread is submitting
-    /// at the same time". Because `WgpuSurfaceHandle` hands out clones of this
-    /// device and queue, every external render thread is such a submitter.
-    ///
-    /// External render threads hold a **read** guard across render + submit
-    /// (`WgpuSurfaceHandle::submit_guard`); `Surface::configure` call sites hold
-    /// the **write** guard (`WgpuRenderer::reconfigure_surface`). Read guards do
-    /// not block each other, so any number of surfaces keep rendering at
-    /// independent rates; only reconfiguration (resize) serializes against them.
-    ///
-    /// The renderer's own submits deliberately do NOT take a read guard: they run
-    /// on the same thread as `configure`, so guarding them would self-deadlock.
-    pub(crate) gpu_submit_lock: Arc<parking_lot::RwLock<()>>,
 }
 
 impl WgpuContext {
@@ -276,108 +341,13 @@ impl WgpuContext {
                 queue.clone(),
             ));
 
-            // Phase 4 of the profiling epic (issue #60/#71) reads these seven
-            // fixed buffers back via `copy_buffer_to_buffer` during a triggered
-            // GPU deep capture (see `DeepCaptureBufferKind`), which requires
-            // `COPY_SRC` on the source buffer or wgpu's validator rejects the
-            // encoder outright -- not a soft failure, a hard panic on the first
-            // frame a capture is armed. Add it only when the capture code that
-            // actually needs it is compiled in, so a non-`flamegraph` build's
-            // buffers are byte-for-byte the same as before this fix.
-            #[cfg(feature = "flamegraph")]
-            let deep_capture_readback = wgpu::BufferUsages::COPY_SRC;
-            #[cfg(not(feature = "flamegraph"))]
-            let deep_capture_readback = wgpu::BufferUsages::empty();
-
-            let quads_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("Quads Buffer"),
-                // Resized dynamically by ensure_buffer_size() when the initial allocation is exceeded.
-                size: 8 * 1024 * 1024,
-                usage: wgpu::BufferUsages::VERTEX
-                    | wgpu::BufferUsages::COPY_DST
-                    | wgpu::BufferUsages::STORAGE
-                    | deep_capture_readback,
-                mapped_at_creation: false,
-            });
-
-            let mono_sprites_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("Monosprites Buffer"),
-                // Resized dynamically by ensure_buffer_size() when the initial allocation is exceeded.
-                size: 8 * 1024 * 1024,
-                usage: wgpu::BufferUsages::VERTEX
-                    | wgpu::BufferUsages::COPY_DST
-                    | wgpu::BufferUsages::STORAGE
-                    | deep_capture_readback,
-                mapped_at_creation: false,
-            });
-
-            let shadows_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("Shadows Buffer"),
-                size: 8 * 1024 * 1024,
-                usage: wgpu::BufferUsages::VERTEX
-                    | wgpu::BufferUsages::COPY_DST
-                    | wgpu::BufferUsages::STORAGE
-                    | deep_capture_readback,
-                mapped_at_creation: false,
-            });
-
-            let backdrop_filters_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("Backdrop Filters Buffer"),
-                size: 8 * 1024 * 1024,
-                usage: wgpu::BufferUsages::VERTEX
-                    | wgpu::BufferUsages::COPY_DST
-                    | wgpu::BufferUsages::STORAGE
-                    | deep_capture_readback,
-                mapped_at_creation: false,
-            });
-
-            let underlines_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("Underlines Buffer"),
-                size: 8 * 1024 * 1024,
-                usage: wgpu::BufferUsages::VERTEX
-                    | wgpu::BufferUsages::COPY_DST
-                    | wgpu::BufferUsages::STORAGE
-                    | deep_capture_readback,
-                mapped_at_creation: false,
-            });
-
-            let poly_sprites_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("Poly Sprites Buffer"),
-                size: 8 * 1024 * 1024,
-                usage: wgpu::BufferUsages::VERTEX
-                    | wgpu::BufferUsages::COPY_DST
-                    | wgpu::BufferUsages::STORAGE
-                    | deep_capture_readback,
-                mapped_at_creation: false,
-            });
-
-            let paths_vertices_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("Path Vertices Buffer"),
-                size: 8 * 1024 * 1024, // 8 MB – ~174 k vertices @ 48 bytes each
-                usage: wgpu::BufferUsages::STORAGE
-                    | wgpu::BufferUsages::COPY_DST
-                    | deep_capture_readback,
-                mapped_at_creation: false,
-            });
-
-            Ok(Self {
+            Ok(Self::with_gpu(WgpuGpu {
+                instance,
                 adapter,
                 device,
-                queue: queue.clone(),
-                instance,
-
-                quads_buffer: Mutex::new(quads_buffer),
-                shadows_buffer: Mutex::new(shadows_buffer),
-                backdrop_filters_buffer: Mutex::new(backdrop_filters_buffer),
-                underlines_buffer: Mutex::new(underlines_buffer),
-                mono_sprites_buffer: Mutex::new(mono_sprites_buffer),
-                poly_sprites_buffer: Mutex::new(poly_sprites_buffer),
-
-                paths_vertices_buffer: Mutex::new(paths_vertices_buffer),
-                surface_registry: Arc::new(SurfaceRegistry::with_queue(queue.clone())),
+                queue,
                 desired_maximum_frame_latency: options.desired_maximum_frame_latency,
-                gpu_submit_lock: Arc::new(parking_lot::RwLock::new(())),
-            })
+            }))
         } // end #[cfg(not(target_family = "wasm"))]
     }
 
@@ -423,140 +393,15 @@ impl WgpuContext {
             })
             .await?;
 
-        Self::create_buffers(
+        Ok(Self::with_gpu(WgpuGpu {
             instance,
             adapter,
             device,
             queue,
-            options.desired_maximum_frame_latency,
-        )
+            desired_maximum_frame_latency: options.desired_maximum_frame_latency,
+        }))
     }
 
-    /// Shared buffer-creation helper, used by both sync (native) and async (WASM) paths.
-    fn create_buffers(
-        instance: wgpu::Instance,
-        adapter: wgpu::Adapter,
-        device: wgpu::Device,
-        queue: wgpu::Queue,
-        desired_maximum_frame_latency: u32,
-    ) -> anyhow::Result<Self> {
-        #[cfg(feature = "flamegraph")]
-        let deep_capture_readback = wgpu::BufferUsages::COPY_SRC;
-        #[cfg(not(feature = "flamegraph"))]
-        let deep_capture_readback = wgpu::BufferUsages::empty();
-
-        let quads_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Quads Buffer"),
-            size: 8 * 1024 * 1024,
-            usage: wgpu::BufferUsages::VERTEX
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::STORAGE
-                | deep_capture_readback,
-            mapped_at_creation: false,
-        });
-
-        let mono_sprites_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Monosprites Buffer"),
-            size: 8 * 1024 * 1024,
-            usage: wgpu::BufferUsages::VERTEX
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::STORAGE
-                | deep_capture_readback,
-            mapped_at_creation: false,
-        });
-
-        let shadows_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Shadows Buffer"),
-            size: 8 * 1024 * 1024,
-            usage: wgpu::BufferUsages::VERTEX
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::STORAGE
-                | deep_capture_readback,
-            mapped_at_creation: false,
-        });
-
-        let backdrop_filters_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Backdrop Filters Buffer"),
-            size: 8 * 1024 * 1024,
-            usage: wgpu::BufferUsages::VERTEX
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::STORAGE
-                | deep_capture_readback,
-            mapped_at_creation: false,
-        });
-
-        let underlines_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Underlines Buffer"),
-            size: 8 * 1024 * 1024,
-            usage: wgpu::BufferUsages::VERTEX
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::STORAGE
-                | deep_capture_readback,
-            mapped_at_creation: false,
-        });
-
-        let poly_sprites_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Poly Sprites Buffer"),
-            size: 8 * 1024 * 1024,
-            usage: wgpu::BufferUsages::VERTEX
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::STORAGE
-                | deep_capture_readback,
-            mapped_at_creation: false,
-        });
-
-        let paths_vertices_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Path Vertices Buffer"),
-            size: 8 * 1024 * 1024,
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_DST
-                | deep_capture_readback,
-            mapped_at_creation: false,
-        });
-
-        Ok(Self {
-            adapter,
-            device,
-            queue: queue.clone(),
-            instance,
-            quads_buffer: Mutex::new(quads_buffer),
-            shadows_buffer: Mutex::new(shadows_buffer),
-            backdrop_filters_buffer: Mutex::new(backdrop_filters_buffer),
-            underlines_buffer: Mutex::new(underlines_buffer),
-            mono_sprites_buffer: Mutex::new(mono_sprites_buffer),
-            poly_sprites_buffer: Mutex::new(poly_sprites_buffer),
-            paths_vertices_buffer: Mutex::new(paths_vertices_buffer),
-            surface_registry: Arc::new(SurfaceRegistry::with_queue(queue.clone())),
-            desired_maximum_frame_latency,
-            gpu_submit_lock: Arc::new(parking_lot::RwLock::new(())),
-        })
-    }
-}
-
-impl WgpuContext {
-    /// Sum of every fixed-size buffer's `wgpu::Buffer::size()` (Phase 3 of
-    /// the profiling epic, issue #59). A poisoned mutex (meaning some other
-    /// thread already panicked while holding it) is treated as contributing
-    /// zero rather than panicking here too -- a memory query should never
-    /// itself be the thing that brings down an already-degraded process.
-    #[cfg(feature = "flamegraph")]
-    pub(crate) fn fixed_buffer_memory_usage(&self) -> u64 {
-        // The globals and color-adjustment uniforms are per-renderer now
-        // (see the struct field comment); they are accounted by
-        // `WgpuRenderer`'s own reporting, not here.
-        buffer_size_or_zero(&self.quads_buffer)
-            + buffer_size_or_zero(&self.shadows_buffer)
-            + buffer_size_or_zero(&self.backdrop_filters_buffer)
-            + buffer_size_or_zero(&self.underlines_buffer)
-            + buffer_size_or_zero(&self.mono_sprites_buffer)
-            + buffer_size_or_zero(&self.poly_sprites_buffer)
-            + buffer_size_or_zero(&self.paths_vertices_buffer)
-    }
-}
-
-#[cfg(feature = "flamegraph")]
-fn buffer_size_or_zero(buffer: &Mutex<wgpu::Buffer>) -> u64 {
-    buffer.lock().size()
 }
 
 /// Bytes per texel for `format`, for GPU memory accounting (Phase 3 of the
@@ -566,7 +411,7 @@ fn buffer_size_or_zero(buffer: &Mutex<wgpu::Buffer>) -> u64 {
 /// -- none of WGPUI's own textures use those formats, so this only matters
 /// for correctness-in-principle, not any real texture this crate creates.
 #[cfg(feature = "flamegraph")]
-pub(super) fn texel_size(format: wgpu::TextureFormat) -> u64 {
+pub(crate) fn texel_size(format: wgpu::TextureFormat) -> u64 {
     format.block_copy_size(None).unwrap_or(4) as u64
 }
 
@@ -576,7 +421,7 @@ pub(super) fn texel_size(format: wgpu::TextureFormat) -> u64 {
 /// `width * height * texel_size`; the general form costs nothing extra to
 /// write and stays correct if that ever changes.
 #[cfg(feature = "flamegraph")]
-pub(super) fn texture_memory_bytes(texture: &wgpu::Texture) -> u64 {
+pub(crate) fn texture_memory_bytes(texture: &wgpu::Texture) -> u64 {
     let bytes_per_texel = texel_size(texture.format());
     let mut total = 0u64;
     for mip in 0..texture.mip_level_count() {
@@ -587,26 +432,23 @@ pub(super) fn texture_memory_bytes(texture: &wgpu::Texture) -> u64 {
     total * (texture.depth_or_array_layers() as u64)
 }
 
+} // mod wgpu_context
+
 /// Ensures a buffer is large enough to hold the required size.
 /// If the buffer is too small, it will be recreated with the new size.
-pub(super) fn ensure_buffer_size(
-    device: &wgpu::Device,
-    buffer: &Mutex<wgpu::Buffer>,
+pub(super) fn ensure_buffer_size<G: Gpu>(
+    gpu: &G,
+    buffer: &Mutex<G::Buffer>,
     required_size: u64,
     label: &str,
-    usage: wgpu::BufferUsages,
+    usage: BufferUsage,
 ) {
     let mut buffer_guard = buffer.lock();
-    let current_size = buffer_guard.size();
+    let current_size = G::buffer_size(&buffer_guard);
     if current_size < required_size {
         // Recreate buffer with new size (add some headroom to avoid frequent reallocations)
         let new_size = (required_size * 3 / 2).max(required_size + 1024 * 1024);
-        *buffer_guard = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some(label),
-            size: new_size,
-            usage,
-            mapped_at_creation: false,
-        });
+        *buffer_guard = gpu.create_buffer(label, new_size, usage);
     }
 }
 

@@ -5,14 +5,14 @@ use refineable::Refineable as _;
 use crate::{
     App, Bounds, Corners, Element, ElementId, GlobalElementId, InspectorElementId, IntoElement, LayoutId,
     MouseButton, Pixels, Style, StyleRefinement, Styled, Window,
-    platform::cross::surface_registry::{SurfaceId, SurfaceRegistry},
+    platform::cross::{hal::wgpu::WgpuGpu, surface_registry::{SurfaceId, SurfaceRegistry}},
 };
 
 /// Inner state shared across clones of `WgpuSurfaceHandle`.
 /// When the last clone is dropped, the surface is removed from the registry.
 struct WgpuSurfaceHandleInner {
     surface_id: SurfaceId,
-    registry: Arc<SurfaceRegistry>,
+    registry: Arc<SurfaceRegistry<WgpuGpu>>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     present_trigger: Arc<dyn Fn() + Send + Sync>,
@@ -61,7 +61,7 @@ impl WgpuSurfaceHandle {
         device: wgpu::Device,
         queue: wgpu::Queue,
         surface_id: SurfaceId,
-        registry: Arc<SurfaceRegistry>,
+        registry: Arc<SurfaceRegistry<WgpuGpu>>,
         present_trigger: Arc<dyn Fn() + Send + Sync>,
         winit_window: Option<Arc<winit::window::Window>>,
         gpu_submit_lock: Arc<parking_lot::RwLock<()>>,
@@ -168,11 +168,11 @@ impl WgpuSurfaceHandle {
     /// // Present with GPU sync
     /// surface.present_synced(submission_idx);
     /// ```
-    pub fn present_synced(&self, submission_index: wgpu::SubmissionIndex) {
+    pub fn present_synced(&self, _submission_index: wgpu::SubmissionIndex) {
         // Atomically swap rendering ↔ ready buffers with GPU sync
         self.inner
             .registry
-            .swap_rendering_ready(self.inner.surface_id, submission_index);
+            .swap_rendering_ready(self.inner.surface_id);
 
         // Track that this surface has new content to be composited
         self.inner
@@ -199,10 +199,10 @@ impl WgpuSurfaceHandle {
     /// Prefer this over [`present_synced()`](Self::present_synced) for render
     /// threads embedded in a live GPUI view: `present_synced` drives repaints from
     /// the render thread, which forces a full window refresh per presented frame.
-    pub fn present_synced_silent(&self, submission_index: wgpu::SubmissionIndex) {
+    pub fn present_synced_silent(&self, _submission_index: wgpu::SubmissionIndex) {
         self.inner
             .registry
-            .swap_rendering_ready(self.inner.surface_id, submission_index);
+            .swap_rendering_ready(self.inner.surface_id);
     }
 
     /// Réveille la boucle de fenêtre pour qu'elle compose la trame publiée par
@@ -228,7 +228,7 @@ impl WgpuSurfaceHandle {
         // Atomically swap rendering ↔ ready buffers (no GPU sync)
         self.inner
             .registry
-            .swap_rendering_ready_no_sync(self.inner.surface_id);
+            .swap_rendering_ready(self.inner.surface_id);
 
         // Track that this surface has new content to be composited
         self.inner
@@ -253,7 +253,7 @@ impl WgpuSurfaceHandle {
     pub fn swap_buffers(&self) {
         self.inner
             .registry
-            .swap_rendering_ready_no_sync(self.inner.surface_id);
+            .swap_rendering_ready(self.inner.surface_id);
     }
 
     /// True if a frame published by [`present_synced`](Self::present_synced) or
@@ -344,7 +344,7 @@ impl WgpuSurfaceHandle {
         }
         self.inner
             .registry
-            .resize(&self.inner.device, self.inner.surface_id, width, height);
+            .resize(self.inner.surface_id, width, height);
     }
 }
 

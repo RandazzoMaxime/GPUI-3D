@@ -7,25 +7,22 @@ use parking_lot::Mutex;
 use crate::{
     AtlasKey, AtlasTextureId, AtlasTextureKind, AtlasTile, Bounds, DevicePixels, PlatformAtlas,
     Point, Size,
-    platform::{AtlasTextureList, cross::render_context::WgpuContext},
+    platform::{AtlasTextureList, cross::hal::{Gpu, TextureUsage}},
 };
 
-pub(crate) struct WgpuAtlas(Mutex<WgpuAtlasState>);
+pub(crate) struct Atlas<G: Gpu>(Mutex<AtlasState<G>>);
 
-impl WgpuAtlas {
-    pub(crate) fn new(context: Arc<WgpuContext>) -> Self {
-        WgpuAtlas(Mutex::new(WgpuAtlasState {
-            context,
-            storage: WgpuAtlasStorage::default(),
+#[cfg(feature = "wgpu")]
+pub(crate) type WgpuAtlas = Atlas<super::hal::wgpu::WgpuGpu>;
+
+impl<G: Gpu> Atlas<G> {
+    pub(crate) fn new(gpu: Arc<G>) -> Self {
+        Atlas(Mutex::new(AtlasState {
+            gpu,
+            storage: AtlasStorage::default(),
             tiles_by_key: FxHashMap::default(),
-            
-            uploads: Vec::new(),
             destroyed_pages: Vec::new(),
         }))
-    }
-
-    pub fn before_frame(&self, encoder: &mut wgpu::CommandEncoder) {
-        self.0.lock().flush(encoder);
     }
 
     /// Drain every page whose contents changed under existing tile handles:
@@ -39,15 +36,18 @@ impl WgpuAtlas {
         std::mem::take(&mut self.0.lock().destroyed_pages)
     }
 
-    pub(crate) fn get_texture_info(&self, texture_id: AtlasTextureId) -> WgpuTextureInfo {
+    pub(crate) fn get_texture_info(&self, texture_id: AtlasTextureId) -> TextureInfo<G> {
         let state = self.0.lock();
         let texture = &state.storage[texture_id];
 
-        WgpuTextureInfo {
+        TextureInfo {
             raw_view: texture.raw_view.clone(),
         }
     }
+}
 
+#[cfg(feature = "flamegraph")]
+impl WgpuAtlas {
     /// Sum of every live atlas texture's backing memory, monochrome and
     /// polychrome combined (Phase 3 of the profiling epic, issue #59).
     #[cfg(feature = "flamegraph")]
@@ -99,7 +99,7 @@ pub(crate) struct WgpuAtlasTextureSnapshot {
 }
 
 #[cfg(feature = "flamegraph")]
-fn atlas_texture_list_memory_usage(textures: &AtlasTextureList<WgpuAtlasTexture>) -> u64 {
+fn atlas_texture_list_memory_usage(textures: &AtlasTextureList<AtlasTexture<super::hal::wgpu::WgpuGpu>>) -> u64 {
     textures
         .textures
         .iter()
@@ -108,7 +108,7 @@ fn atlas_texture_list_memory_usage(textures: &AtlasTextureList<WgpuAtlasTexture>
         .sum()
 }
 
-impl PlatformAtlas for WgpuAtlas {
+impl<G: Gpu> PlatformAtlas for Atlas<G> {
     fn get_or_insert_with<'a>(
         &self,
         key: &AtlasKey,
@@ -173,7 +173,6 @@ impl PlatformAtlas for WgpuAtlas {
                     .push(texture.id.index as usize);
 
                 // Eagerly destroy to free GPU memory immediately.
-                texture.destroy(&atlas.context);
             } else {
                 *texture_slot = Some(texture);
             }
@@ -181,17 +180,16 @@ impl PlatformAtlas for WgpuAtlas {
     }
 }
 
-struct WgpuAtlasState {
-    context: Arc<WgpuContext>,
-    storage: WgpuAtlasStorage,
+struct AtlasState<G: Gpu> {
+    gpu: Arc<G>,
+    storage: AtlasStorage<G>,
     tiles_by_key: FxHashMap<AtlasKey, AtlasTile>,
-    uploads: Vec<PendingUpload>,
     /// Evictions not yet reported to the slab registry: destroyed pages and
     /// tiles freed from live pages, deduplicated at drain time.
     destroyed_pages: Vec<crate::AtlasTextureId>,
 }
 
-impl WgpuAtlasState {
+impl<G: Gpu> AtlasState<G> {
     fn allocate(
         &mut self,
         size: Size<DevicePixels>,
@@ -214,8 +212,8 @@ impl WgpuAtlasState {
         texture.allocate(size).ok_or_else(|| {
             anyhow::anyhow!(
                 "newly created atlas texture of size {}x{} could not satisfy allocation of size {}x{}",
-                texture.raw.width(),
-                texture.raw.height(),
+                G::texture_size(&texture.raw).0,
+                G::texture_size(&texture.raw).1,
                 size.width.0,
                 size.height.0,
             )
@@ -226,7 +224,7 @@ impl WgpuAtlasState {
         &mut self,
         min_size: Size<DevicePixels>,
         texture_kind: AtlasTextureKind,
-    ) -> &mut WgpuAtlasTexture {
+    ) -> &mut AtlasTexture<G> {
         const DEFAULT_ATLAS_SIZE: Size<DevicePixels> = Size {
             width: DevicePixels(1024),
             height: DevicePixels(1024),
@@ -234,56 +232,24 @@ impl WgpuAtlasState {
 
         let size = min_size.max(&DEFAULT_ATLAS_SIZE);
 
-        let (format, usage) = match texture_kind {
-            AtlasTextureKind::Monochrome => (
-                wgpu::TextureFormat::R8Unorm,
-                wgpu::TextureUsages::COPY_SRC
-                    | wgpu::TextureUsages::COPY_DST
-                    | wgpu::TextureUsages::TEXTURE_BINDING,
-            ),
-            AtlasTextureKind::Polychrome => (
-                wgpu::TextureFormat::Rgba8Unorm,
-                wgpu::TextureUsages::COPY_SRC
-                    | wgpu::TextureUsages::COPY_DST
-                    | wgpu::TextureUsages::TEXTURE_BINDING,
-            ),
+        let format = match texture_kind {
+            AtlasTextureKind::Monochrome => G::ATLAS_MONOCHROME,
+            AtlasTextureKind::Polychrome => G::ATLAS_POLYCHROME,
         };
-
-        let texture_raw = self
-            .context
-            .device
-            .create_texture(&wgpu::TextureDescriptor {
-                label: Some("Atlas Texture"),
-                size: wgpu::Extent3d {
-                    width: size.width.0 as u32,
-                    height: size.height.0 as u32,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format,
-                usage,
-                view_formats: &[],
-            });
-
-        let texture_raw_view = texture_raw.create_view(&wgpu::TextureViewDescriptor {
-            label: Some("Atlas Texture Raw"),
-            format: Some(format),
-            dimension: Some(wgpu::TextureViewDimension::D2),
-            usage: Some(texture_raw.usage()),
-            aspect: wgpu::TextureAspect::All,
-            base_mip_level: 0,
-            mip_level_count: None,
-            base_array_layer: 0,
-            array_layer_count: None,
-        });
+        let texture_raw = self.gpu.create_texture(
+            "Atlas Texture",
+            size.width.0 as u32,
+            size.height.0 as u32,
+            format,
+            TextureUsage::COPY_SRC | TextureUsage::COPY_DST | TextureUsage::SAMPLED,
+        );
+        let texture_raw_view = G::create_view(&texture_raw);
 
         let texture_list = &mut self.storage[texture_kind];
 
         let index = texture_list.free_list.pop();
 
-        let atlas_texture = WgpuAtlasTexture {
+        let atlas_texture = AtlasTexture {
             id: AtlasTextureId {
                 kind: texture_kind,
                 index: index.unwrap_or(texture_list.textures.len()) as u32,
@@ -321,99 +287,26 @@ impl WgpuAtlasState {
         bytes: &[u8],
     ) {
         let texture = &self.storage[texture_id];
-        let bytes_per_pixel = texture.bytes_per_pixel();
-        let unpadded_bytes_per_row = bounds.size.width.to_bytes(bytes_per_pixel) as usize;
-        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize;
-        let padded_bytes_per_row = (unpadded_bytes_per_row + align - 1) / align * align;
-        let height = bounds.size.height.0 as usize;
-
-        let padded_data = if padded_bytes_per_row != unpadded_bytes_per_row {
-            let mut padded = vec![0u8; padded_bytes_per_row * height];
-            for row in 0..height {
-                let src_start = row * unpadded_bytes_per_row;
-                let dst_start = row * padded_bytes_per_row;
-                padded[dst_start..dst_start + unpadded_bytes_per_row]
-                    .copy_from_slice(&bytes[src_start..src_start + unpadded_bytes_per_row]);
-            }
-            Some(padded)
-        } else {
-            None
-        };
-
-        let contents = padded_data.as_deref().unwrap_or(bytes);
-
-        // Work around driver issues by using queue.write_texture directly
-        // instead of staging through a buffer (see helio/ship_flight repro).
-        let texture = &self.storage[texture_id];
-
-        self.context.queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &texture.raw,
-                mip_level: 0,
-                origin: wgpu::Origin3d {
-                    x: bounds.origin.x.into(),
-                    y: bounds.origin.y.into(),
-                    z: 0,
-                },
-                aspect: wgpu::TextureAspect::All,
-            },
-            contents,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(padded_bytes_per_row as u32),
-                rows_per_image: None,
-            },
-            wgpu::Extent3d {
-                width: bounds.size.width.into(),
-                height: bounds.size.height.into(),
-                depth_or_array_layers: 1,
-            },
-        )
-    }
-
-    fn flush(&mut self, encoder: &mut wgpu::CommandEncoder) {
-        for upload in self.uploads.drain(..) {
-            let texture = &self.storage[upload.texture_id];
-
-            encoder.copy_buffer_to_texture(
-                wgpu::TexelCopyBufferInfo {
-                    buffer: &upload.buffer,
-                    layout: wgpu::TexelCopyBufferLayout {
-                        offset: upload.offset,
-                        bytes_per_row: Some(upload.padded_bytes_per_row),
-                        rows_per_image: None,
-                    },
-                },
-                wgpu::TexelCopyTextureInfo {
-                    texture: &texture.raw,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d {
-                        x: upload.bounds.origin.x.into(),
-                        y: upload.bounds.origin.y.into(),
-                        z: 0,
-                    },
-                    aspect: wgpu::TextureAspect::All,
-                },
-                wgpu::Extent3d {
-                    width: upload.bounds.size.width.into(),
-                    height: upload.bounds.size.height.into(),
-                    depth_or_array_layers: 1,
-                },
-            );
-        }
+        self.gpu.write_texture(
+            &texture.raw,
+            (bounds.origin.x.into(), bounds.origin.y.into()),
+            (bounds.size.width.into(), bounds.size.height.into()),
+            G::bytes_per_pixel(texture.format),
+            bytes,
+        );
     }
 }
 
-pub(crate) struct WgpuAtlasTexture {
+pub(crate) struct AtlasTexture<G: Gpu> {
     id: AtlasTextureId,
     allocator: BucketedAtlasAllocator,
-    raw: wgpu::Texture,
-    raw_view: wgpu::TextureView,
-    format: wgpu::TextureFormat,
+    raw: G::Texture,
+    raw_view: G::TextureView,
+    format: G::Format,
     live_atlas_keys: u32,
 }
 
-impl WgpuAtlasTexture {
+impl<G: Gpu> AtlasTexture<G> {
     fn allocate(&mut self, size: Size<DevicePixels>) -> Option<AtlasTile> {
         let allocation = self.allocator.allocate(size.into())?;
 
@@ -432,12 +325,6 @@ impl WgpuAtlasTexture {
         Some(tile)
     }
 
-    fn bytes_per_pixel(&self) -> u8 {
-        self.format
-            .block_copy_size(None)
-            .expect("atlas texture format should have a known block copy size") as u8
-    }
-
     fn decrement_ref_count(&mut self) {
         self.live_atlas_keys = self.live_atlas_keys.saturating_sub(1);
     }
@@ -445,15 +332,10 @@ impl WgpuAtlasTexture {
     fn is_unreferenced(&self) -> bool {
         self.live_atlas_keys == 0
     }
-
-    fn destroy(self, _context: &WgpuContext) {
-        // NOTE(mdeand): In wgpu, textures are automatically cleaned up when dropped.
-        // NOTE(mdeand): If there were any additional resources to free, they would be handled here.
-    }
 }
 
-impl std::ops::Index<AtlasTextureKind> for WgpuAtlasStorage {
-    type Output = AtlasTextureList<WgpuAtlasTexture>;
+impl<G: Gpu> std::ops::Index<AtlasTextureKind> for AtlasStorage<G> {
+    type Output = AtlasTextureList<AtlasTexture<G>>;
     fn index(&self, kind: AtlasTextureKind) -> &Self::Output {
         match kind {
             crate::AtlasTextureKind::Monochrome => &self.monochrome_textures,
@@ -462,7 +344,7 @@ impl std::ops::Index<AtlasTextureKind> for WgpuAtlasStorage {
     }
 }
 
-impl std::ops::IndexMut<AtlasTextureKind> for WgpuAtlasStorage {
+impl<G: Gpu> std::ops::IndexMut<AtlasTextureKind> for AtlasStorage<G> {
     fn index_mut(&mut self, kind: AtlasTextureKind) -> &mut Self::Output {
         match kind {
             crate::AtlasTextureKind::Monochrome => &mut self.monochrome_textures,
@@ -471,8 +353,8 @@ impl std::ops::IndexMut<AtlasTextureKind> for WgpuAtlasStorage {
     }
 }
 
-impl std::ops::Index<AtlasTextureId> for WgpuAtlasStorage {
-    type Output = WgpuAtlasTexture;
+impl<G: Gpu> std::ops::Index<AtlasTextureId> for AtlasStorage<G> {
+    type Output = AtlasTexture<G>;
     fn index(&self, id: AtlasTextureId) -> &Self::Output {
         let textures = match id.kind {
             crate::AtlasTextureKind::Monochrome => &self.monochrome_textures,
@@ -483,22 +365,22 @@ impl std::ops::Index<AtlasTextureId> for WgpuAtlasStorage {
     }
 }
 
-#[derive(Default)]
-struct WgpuAtlasStorage {
-    monochrome_textures: AtlasTextureList<WgpuAtlasTexture>,
-    polychrome_textures: AtlasTextureList<WgpuAtlasTexture>,
+struct AtlasStorage<G: Gpu> {
+    monochrome_textures: AtlasTextureList<AtlasTexture<G>>,
+    polychrome_textures: AtlasTextureList<AtlasTexture<G>>,
 }
 
-pub(crate) struct WgpuTextureInfo {
-    pub raw_view: wgpu::TextureView,
+impl<G: Gpu> Default for AtlasStorage<G> {
+    fn default() -> Self {
+        Self {
+            monochrome_textures: AtlasTextureList::default(),
+            polychrome_textures: AtlasTextureList::default(),
+        }
+    }
 }
 
-struct PendingUpload {
-    texture_id: AtlasTextureId,
-    bounds: Bounds<DevicePixels>,
-    buffer: wgpu::Buffer,
-    offset: u64,
-    padded_bytes_per_row: u32,
+pub(crate) struct TextureInfo<G: Gpu> {
+    pub raw_view: G::TextureView,
 }
 
 impl From<Size<DevicePixels>> for etagere::Size {

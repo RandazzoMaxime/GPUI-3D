@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
@@ -44,6 +45,8 @@ fn stale_to_carry<T>(already_held: Option<T>, current_display: T) -> Option<T> {
 // GPUI-3D : défini dans `scene` (indépendant du backend), réexporté ici.
 pub use crate::scene::SurfaceId;
 
+use super::hal::{Gpu, TextureUsage};
+
 /// Triple-buffered surface for lock-free rendering.
 ///
 /// Uses three buffers with atomic index swaps:
@@ -52,17 +55,13 @@ pub use crate::scene::SurfaceId;
 /// - `display`: Currently being composited by GPUI
 ///
 /// This allows external thread and compositor to run independently without blocking.
-struct TripleBuffer {
-    textures: [wgpu::Texture; 3],
-    views: [wgpu::TextureView; 3],
+struct TripleBuffer<G: Gpu> {
+    textures: [G::Texture; 3],
+    views: [G::TextureView; 3],
 
     // Packed state: 2 bits each for rendering/ready/display indices.
     // layout: [display(2-bit) | ready(2-bit) | rendering(2-bit)]
     state: AtomicU8,
-
-    // GPU synchronization: Track submission indices for each buffer to ensure
-    // GPU work is complete before swapping buffers
-    submission_indices: Mutex<[Option<wgpu::SubmissionIndex>; 3]>,
 
     // Redraw coalescing: prevents flooding compositor with thousands of requests/sec
     redraw_pending: std::sync::atomic::AtomicBool,
@@ -78,7 +77,7 @@ struct TripleBuffer {
     // reaffiche donc l'ancienne image, etiree, jusqu'a la premiere vraie trame
     // a la nouvelle taille. La vue suffit a maintenir la texture en vie, wgpu
     // comptant les references.
-    stale_display: Option<wgpu::TextureView>,
+    stale_display: Option<G::TextureView>,
 
     // Monotonic count of producer swaps (rendering → ready): one increment per
     // frame the external renderer presents.
@@ -91,10 +90,10 @@ struct TripleBuffer {
 
     width: u32,
     height: u32,
-    format: wgpu::TextureFormat,
+    format: G::Format,
 }
 
-impl TripleBuffer {
+impl<G: Gpu> TripleBuffer<G> {
     #[inline]
     fn pack_state(rendering: u8, ready: u8, display: u8) -> u8 {
         debug_assert!(rendering < 3 && ready < 3 && display < 3);
@@ -113,34 +112,27 @@ impl TripleBuffer {
 
 /// Thread-safe registry of all active WGPU surfaces.
 /// Maps `SurfaceId` to triple-buffered texture sets.
-pub struct SurfaceRegistry {
-    surfaces: Mutex<HashMap<SurfaceId, TripleBuffer>>,
+pub struct SurfaceRegistry<G: Gpu> {
+    gpu: Arc<G>,
+    surfaces: Mutex<HashMap<SurfaceId, TripleBuffer<G>>>,
     next_id: AtomicU64,
     seen_generations: AtomicU64,
-    /// GPUI-3D : queue du device, pour initialiser les tampons dès leur création.
-    queue: std::sync::OnceLock<wgpu::Queue>,
     /// GPUI-3D : `VkQueue` exige une synchronisation externe ; tout `submit`/`present`
     /// wgpu du compositeur et tout `vkQueueSubmit` d'un moteur natif le prennent.
     queue_lock: parking_lot::Mutex<()>,
 }
 
-impl SurfaceRegistry {
-    pub fn new() -> Self {
+impl<G: Gpu> SurfaceRegistry<G> {
+    /// GPUI-3D : les tampons sont initialisés à leur création pour les moteurs natifs
+    /// (voir [`Gpu::init_external_textures`]).
+    pub fn new(gpu: Arc<G>) -> Self {
         Self {
+            gpu,
             surfaces: Mutex::new(HashMap::new()),
             next_id: AtomicU64::new(1),
             seen_generations: AtomicU64::new(0),
-            queue: std::sync::OnceLock::new(),
             queue_lock: parking_lot::Mutex::new(()),
         }
-    }
-
-    /// GPUI-3D : registre dont les tampons sont initialisés à la création (voir
-    /// [`Self::init_for_native_writers`]).
-    pub fn with_queue(queue: wgpu::Queue) -> Self {
-        let registry = Self::new();
-        let _ = registry.queue.set(queue);
-        registry
     }
 
     /// GPUI-3D : verrou de la queue partagée (voir le champ `queue_lock`).
@@ -149,15 +141,9 @@ impl SurfaceRegistry {
     }
 
     /// Create a new triple-buffered surface. Returns its `SurfaceId`.
-    pub fn create(
-        &self,
-        device: &wgpu::Device,
-        width: u32,
-        height: u32,
-        format: wgpu::TextureFormat,
-    ) -> SurfaceId {
+    pub fn create(&self, width: u32, height: u32, format: G::Format) -> SurfaceId {
         let id = SurfaceId(self.next_id.fetch_add(1, Ordering::Relaxed));
-        let tb = self.create_triple_buffer(device, width, height, format);
+        let tb = self.create_triple_buffer(width, height, format);
         self.surfaces.lock().unwrap().insert(id, tb);
         id
     }
@@ -167,14 +153,11 @@ impl SurfaceRegistry {
     /// This is the "present" operation - it makes the newly rendered frame available
     /// to the compositor and gives the external thread a recycled buffer to render into.
     ///
-    /// The `submission_idx` is stored to track GPU work completion, allowing the compositor
-    /// to poll before sampling to prevent reading incomplete frames.
-    ///
     /// Returns immediately without blocking.
-    pub fn swap_rendering_ready(&self, id: SurfaceId, submission_idx: wgpu::SubmissionIndex) {
+    pub fn swap_rendering_ready(&self, id: SurfaceId) {
         if let Some(tb) = self.surfaces.lock().unwrap().get(&id) {
             let current = tb.state.load(Ordering::Acquire);
-            let (rendering, ready, display) = TripleBuffer::unpack_state(current);
+            let (rendering, ready, display) = TripleBuffer::<G>::unpack_state(current);
 
             log::trace!(
                 "[surface_id={:?}] swap_rendering_ready called - state before: rendering={}, ready={}, display={}",
@@ -184,39 +167,11 @@ impl SurfaceRegistry {
                 display
             );
 
-            // Store submission index for the buffer we just rendered to
-            tb.submission_indices.lock().unwrap()[rendering as usize] = Some(submission_idx);
-
             // Atomic swap: rendering ↔ ready
             let mut current = tb.state.load(Ordering::Acquire);
             loop {
-                let (rendering, ready, display) = TripleBuffer::unpack_state(current);
-                let next = TripleBuffer::pack_state(ready, rendering, display);
-                match tb
-                    .state
-                    .compare_exchange(current, next, Ordering::AcqRel, Ordering::Acquire)
-                {
-                    Ok(_) => break,
-                    Err(updated) => current = updated,
-                }
-            }
-
-            // A newly rendered frame now sits in `ready`; advance the generation
-            // so the compositor swaps it to `display` exactly once.
-            tb.frame_generation.fetch_add(1, Ordering::Release);
-        }
-    }
-
-    /// Atomically swap rendering and ready buffers without GPU synchronization.
-    ///
-    /// DEPRECATED: Use swap_rendering_ready() with SubmissionIndex for proper GPU sync.
-    /// This method exists for backward compatibility only.
-    pub fn swap_rendering_ready_no_sync(&self, id: SurfaceId) {
-        if let Some(tb) = self.surfaces.lock().unwrap().get(&id) {
-            let mut current = tb.state.load(Ordering::Acquire);
-            loop {
-                let (rendering, ready, display) = TripleBuffer::unpack_state(current);
-                let next = TripleBuffer::pack_state(ready, rendering, display);
+                let (rendering, ready, display) = TripleBuffer::<G>::unpack_state(current);
+                let next = TripleBuffer::<G>::pack_state(ready, rendering, display);
                 match tb
                     .state
                     .compare_exchange(current, next, Ordering::AcqRel, Ordering::Acquire)
@@ -233,10 +188,10 @@ impl SurfaceRegistry {
     }
 
     /// Get the rendering buffer's `TextureView` (what external code renders into).
-    pub fn back_view(&self, id: SurfaceId) -> Option<wgpu::TextureView> {
+    pub fn back_view(&self, id: SurfaceId) -> Option<G::TextureView> {
         let surfaces = self.surfaces.lock().unwrap();
         surfaces.get(&id).map(|tb| {
-            let (rendering, _, _) = TripleBuffer::unpack_state(tb.state.load(Ordering::Acquire));
+            let (rendering, _, _) = TripleBuffer::<G>::unpack_state(tb.state.load(Ordering::Acquire));
             tb.views[rendering as usize].clone()
         })
     }
@@ -244,16 +199,16 @@ impl SurfaceRegistry {
     /// Compat (voir src/compat.rs) : la `Texture` du buffer de
     /// rendu, quand le rendu externe a besoin de plus qu'une vue (copies,
     /// dimensions, format).
-    pub fn back_texture(&self, id: SurfaceId) -> Option<wgpu::Texture> {
+    pub fn back_texture(&self, id: SurfaceId) -> Option<G::Texture> {
         let surfaces = self.surfaces.lock().unwrap();
         surfaces.get(&id).map(|tb| {
-            let (rendering, _, _) = TripleBuffer::unpack_state(tb.state.load(Ordering::Acquire));
+            let (rendering, _, _) = TripleBuffer::<G>::unpack_state(tb.state.load(Ordering::Acquire));
             tb.textures[rendering as usize].clone()
         })
     }
 
     /// Get the display buffer's `TextureView` (what the compositor reads from).
-    pub fn front_view(&self, id: SurfaceId) -> Option<wgpu::TextureView> {
+    pub fn front_view(&self, id: SurfaceId) -> Option<G::TextureView> {
         let surfaces = self.surfaces.lock().unwrap();
         surfaces.get(&id).map(|tb| {
             // Tant qu'aucune trame n'a ete rendue a la taille courante, le
@@ -261,7 +216,7 @@ impl SurfaceRegistry {
             if let Some(stale) = &tb.stale_display {
                 return stale.clone();
             }
-            let (_, _, display) = TripleBuffer::unpack_state(tb.state.load(Ordering::Acquire));
+            let (_, _, display) = TripleBuffer::<G>::unpack_state(tb.state.load(Ordering::Acquire));
             tb.views[display as usize].clone()
         })
     }
@@ -272,10 +227,10 @@ impl SurfaceRegistry {
     pub fn lock_and_get_back_with_size(
         &self,
         id: SurfaceId,
-    ) -> Option<(wgpu::TextureView, (u32, u32))> {
+    ) -> Option<(G::TextureView, (u32, u32))> {
         let surfaces = self.surfaces.lock().unwrap();
         surfaces.get(&id).map(|tb| {
-            let (rendering, _, _) = TripleBuffer::unpack_state(tb.state.load(Ordering::Acquire));
+            let (rendering, _, _) = TripleBuffer::<G>::unpack_state(tb.state.load(Ordering::Acquire));
             (tb.views[rendering as usize].clone(), (tb.width, tb.height))
         })
     }
@@ -294,7 +249,7 @@ impl SurfaceRegistry {
     /// le compositeur lâche les tampons. L'appelant ne doit ni boucler ni
     /// attendre — une attente active sur ce drapeau tenait tout un glissement
     /// de bordure et ne pouvait pas se terminer si le drapeau restait posé.
-    pub fn resize(&self, device: &wgpu::Device, id: SurfaceId, width: u32, height: u32) -> bool {
+    pub fn resize(&self, id: SurfaceId, width: u32, height: u32) -> bool {
         let mut surfaces = self.surfaces.lock().unwrap();
         if let Some(tb) = surfaces.get_mut(&id) {
             let pending = tb.redraw_pending.load(Ordering::Relaxed);
@@ -305,7 +260,7 @@ impl SurfaceRegistry {
                     tb.pending_resize = Some((width, height));
                     return false;
                 }
-                ResizeDecision::Apply => self.apply_resize(tb, device, width, height),
+                ResizeDecision::Apply => self.apply_resize(tb, width, height),
             }
             return true;
         }
@@ -317,17 +272,17 @@ impl SurfaceRegistry {
     /// 2. Calling poll from compositor thread causes device corruption
     /// 3. WGPU internally ref-counts textures, so old views remain valid until dropped
     /// 4. Callers only reach this with `redraw_pending` clear
-    fn apply_resize(&self, tb: &mut TripleBuffer, device: &wgpu::Device, width: u32, height: u32) {
+    fn apply_resize(&self, tb: &mut TripleBuffer<G>, width: u32, height: u32) {
         // Reallouer d'abord, garder l'image ensuite : un glissement enchaine les
         // reallocations, et a la deuxieme le tampon d'affichage est deja neuf
         // donc noir. On reporte donc la PREMIERE image encore valide, pas la
         // courante, jusqu'a ce qu'une vraie trame la remplace.
-        let (_, _, display) = TripleBuffer::unpack_state(tb.state.load(Ordering::Acquire));
+        let (_, _, display) = TripleBuffer::<G>::unpack_state(tb.state.load(Ordering::Acquire));
         let carried = stale_to_carry(
             tb.stale_display.take(),
             tb.views[display as usize].clone(),
         );
-        *tb = self.create_triple_buffer(device, width, height, tb.format);
+        *tb = self.create_triple_buffer(width, height, tb.format);
         tb.stale_display = carried;
     }
 
@@ -353,30 +308,6 @@ impl SurfaceRegistry {
         surfaces.get(&id).map(|tb| (tb.width, tb.height))
     }
 
-    /// One surface's currently-displayed triple-buffer texture, snapshotted
-    /// for a triggered GPU deep capture (Phase 4b of the profiling epic,
-    /// issue #72). Distinct from `front_view`, which only exposes a
-    /// `TextureView` -- enough to bind the surfaces pipeline, but
-    /// `copy_texture_to_buffer` needs the underlying `wgpu::Texture`
-    /// directly, plus the pixel dimensions/texel size a caller needs to
-    /// compute `wgpu::COPY_BYTES_PER_ROW_ALIGNMENT` row padding. A poisoned
-    /// lock is treated as "nothing to snapshot" rather than propagating the
-    /// panic -- this is a diagnostic-only read, matching `memory_usage`'s
-    /// same choice just below.
-    #[cfg(feature = "flamegraph")]
-    pub(crate) fn front_texture_snapshot(&self, id: SurfaceId) -> Option<SurfaceTextureSnapshot> {
-        let surfaces = self.surfaces.lock().ok()?;
-        surfaces.get(&id).map(|tb| {
-            let (_, _, display) = TripleBuffer::unpack_state(tb.state.load(Ordering::Acquire));
-            SurfaceTextureSnapshot {
-                texture: tb.textures[display as usize].clone(),
-                width: tb.width,
-                height: tb.height,
-                bytes_per_pixel: super::render_context::texel_size(tb.format) as u32,
-            }
-        })
-    }
-
     /// Remove a surface from the registry.
     pub fn remove(&self, id: SurfaceId) {
         self.surfaces.lock().unwrap().remove(&id);
@@ -399,12 +330,12 @@ impl SurfaceRegistry {
     /// le compositeur ne lit plus les tampons, une taille retenue par
     /// [`resize`](Self::resize) s'applique donc ici. La vue déjà clonée dans la
     /// passe en cours reste valide — wgpu compte les références des textures.
-    pub fn clear_redraw_pending(&self, device: &wgpu::Device, id: SurfaceId) {
+    pub fn clear_redraw_pending(&self, id: SurfaceId) {
         if let Some(tb) = self.surfaces.lock().unwrap().get_mut(&id) {
             tb.redraw_pending.store(false, Ordering::Relaxed);
             if let Some((width, height)) = tb.pending_resize.take() {
                 if (tb.width, tb.height) != (width, height) {
-                    self.apply_resize(tb, device, width, height);
+                    self.apply_resize(tb, width, height);
                 }
             }
         }
@@ -419,23 +350,6 @@ impl SurfaceRegistry {
             .filter(|(_, tb)| tb.redraw_pending.load(Ordering::Relaxed))
             .map(|(id, _)| *id)
             .collect()
-    }
-
-    /// Sum of every registered surface's three triple-buffered textures
-    /// (Phase 3 of the profiling epic, issue #59). A poisoned lock (some
-    /// other thread already panicked while holding it) is treated as
-    /// contributing zero rather than panicking here too.
-    #[cfg(feature = "flamegraph")]
-    pub(crate) fn memory_usage(&self) -> u64 {
-        let surfaces = match self.surfaces.lock() {
-            Ok(surfaces) => surfaces,
-            Err(_) => return 0,
-        };
-        surfaces
-            .values()
-            .flat_map(|triple_buffer| triple_buffer.textures.iter())
-            .map(super::render_context::texture_memory_bytes)
-            .sum()
     }
 
     /// Swap `ready → display` only if the external renderer has presented a new
@@ -467,8 +381,8 @@ impl SurfaceRegistry {
             // Atomic swap: ready ↔ display
             let mut current = tb.state.load(Ordering::Acquire);
             loop {
-                let (rendering, ready, display) = TripleBuffer::unpack_state(current);
-                let next = TripleBuffer::pack_state(rendering, display, ready);
+                let (rendering, ready, display) = TripleBuffer::<G>::unpack_state(current);
+                let next = TripleBuffer::<G>::pack_state(rendering, display, ready);
                 match tb
                     .state
                     .compare_exchange(current, next, Ordering::AcqRel, Ordering::Acquire)
@@ -550,13 +464,7 @@ impl SurfaceRegistry {
         current_generation != last_composited
     }
 
-    fn create_triple_buffer(
-        &self,
-        device: &wgpu::Device,
-        width: u32,
-        height: u32,
-        format: wgpu::TextureFormat,
-    ) -> TripleBuffer {
+    fn create_triple_buffer(&self, width: u32, height: u32, format: G::Format) -> TripleBuffer<G> {
         let w = width.max(1);
         let h = height.max(1);
 
@@ -571,47 +479,26 @@ impl SurfaceRegistry {
         // that actually needs it is compiled in, so a non-`flamegraph`
         // build's surface textures are byte-for-byte the same as before
         // this change.
+        let usage = TextureUsage::RENDER_TARGET | TextureUsage::SAMPLED;
         #[cfg(feature = "flamegraph")]
-        let deep_capture_readback = wgpu::TextureUsages::COPY_SRC;
-        #[cfg(not(feature = "flamegraph"))]
-        let deep_capture_readback = wgpu::TextureUsages::empty();
+        let usage = usage | TextureUsage::COPY_SRC;
 
-        let create_texture = |label: &str| {
-            device.create_texture(&wgpu::TextureDescriptor {
-                label: Some(label),
-                size: wgpu::Extent3d {
-                    width: w,
-                    height: h,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::TEXTURE_BINDING
-                    | deep_capture_readback,
-                view_formats: &[],
-            })
-        };
-
-        let tex0 = create_texture("surface_buffer_0");
-        let tex1 = create_texture("surface_buffer_1");
-        let tex2 = create_texture("surface_buffer_2");
-
-        if let Some(queue) = self.queue.get() {
-            self.init_for_native_writers(device, queue, [&tex0, &tex1, &tex2]);
+        let textures = ["surface_buffer_0", "surface_buffer_1", "surface_buffer_2"]
+            .map(|label| self.gpu.create_texture(label, w, h, format, usage));
+        {
+            let _queue = self.queue_lock();
+            self.gpu.init_external_textures([&textures[0], &textures[1], &textures[2]]);
         }
-
-        let view0 = tex0.create_view(&wgpu::TextureViewDescriptor::default());
-        let view1 = tex1.create_view(&wgpu::TextureViewDescriptor::default());
-        let view2 = tex2.create_view(&wgpu::TextureViewDescriptor::default());
+        let views = [
+            G::create_view(&textures[0]),
+            G::create_view(&textures[1]),
+            G::create_view(&textures[2]),
+        ];
 
         TripleBuffer {
-            textures: [tex0, tex1, tex2],
-            views: [view0, view1, view2],
-            state: AtomicU8::new(TripleBuffer::pack_state(0, 1, 2)),
-            submission_indices: Mutex::new([None, None, None]),
+            textures,
+            views,
+            state: AtomicU8::new(TripleBuffer::<G>::pack_state(0, 1, 2)),
             redraw_pending: std::sync::atomic::AtomicBool::new(false),
             pending_resize: None,
             stale_display: None,
@@ -624,41 +511,47 @@ impl SurfaceRegistry {
     }
 }
 
-impl SurfaceRegistry {
-    /// GPUI-3D : un moteur natif (Metal, Vulkan) écrit les tampons sans que wgpu le
-    /// sache. Sans ceci, wgpu jugerait une texture vierge et la remettrait à zéro avant
-    /// de l'échantillonner. Contrat de layout : entre deux trames, chaque tampon est à
-    /// l'état `RESOURCE` (Vulkan : `SHADER_READ_ONLY_OPTIMAL`) ; un moteur natif l'y laisse.
-    fn init_for_native_writers(&self, device: &wgpu::Device, queue: &wgpu::Queue, textures: [&wgpu::Texture; 3]) {
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("surface_buffers_init"),
-        });
-        for texture in textures {
-            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("surface_buffer_clear"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    depth_slice: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                ..Default::default()
-            });
-        }
-        encoder.transition_resources(
-            std::iter::empty(),
-            textures.into_iter().map(|texture| wgpu::TextureTransition {
-                texture,
-                selector: None,
-                state: wgpu::TextureUses::RESOURCE,
-            }),
-        );
-        let _guard = self.queue_lock();
-        queue.submit(Some(encoder.finish()));
+#[cfg(feature = "flamegraph")]
+impl SurfaceRegistry<super::hal::wgpu::WgpuGpu> {
+    /// One surface's currently-displayed triple-buffer texture, snapshotted
+    /// for a triggered GPU deep capture (Phase 4b of the profiling epic,
+    /// issue #72). Distinct from `front_view`, which only exposes a
+    /// `TextureView` -- enough to bind the surfaces pipeline, but
+    /// `copy_texture_to_buffer` needs the underlying `wgpu::Texture`
+    /// directly, plus the pixel dimensions/texel size a caller needs to
+    /// compute `wgpu::COPY_BYTES_PER_ROW_ALIGNMENT` row padding. A poisoned
+    /// lock is treated as "nothing to snapshot" rather than propagating the
+    /// panic -- this is a diagnostic-only read, matching `memory_usage`'s
+    /// same choice just below.
+    #[cfg(feature = "flamegraph")]
+    pub(crate) fn front_texture_snapshot(&self, id: SurfaceId) -> Option<SurfaceTextureSnapshot> {
+        let surfaces = self.surfaces.lock().ok()?;
+        surfaces.get(&id).map(|tb| {
+            let (_, _, display) = TripleBuffer::<super::hal::wgpu::WgpuGpu>::unpack_state(tb.state.load(Ordering::Acquire));
+            SurfaceTextureSnapshot {
+                texture: tb.textures[display as usize].clone(),
+                width: tb.width,
+                height: tb.height,
+                bytes_per_pixel: super::render_context::texel_size(tb.format) as u32,
+            }
+        })
+    }
+
+    /// Sum of every registered surface's three triple-buffered textures
+    /// (Phase 3 of the profiling epic, issue #59). A poisoned lock (some
+    /// other thread already panicked while holding it) is treated as
+    /// contributing zero rather than panicking here too.
+    #[cfg(feature = "flamegraph")]
+    pub(crate) fn memory_usage(&self) -> u64 {
+        let surfaces = match self.surfaces.lock() {
+            Ok(surfaces) => surfaces,
+            Err(_) => return 0,
+        };
+        surfaces
+            .values()
+            .flat_map(|triple_buffer| triple_buffer.textures.iter())
+            .map(super::render_context::texture_memory_bytes)
+            .sum()
     }
 }
 
@@ -681,7 +574,7 @@ mod flamegraph_tests {
     /// doc comment for why `enumerate_adapters` + pick-first is used instead
     /// of `request_adapter`, and why a missing adapter skips rather than
     /// fails the test in this sandbox).
-    use super::tests::create_headless_device;
+    use super::tests::headless_gpu;
 
     /// Regression test for the exact bug class `render_context.rs`'s fixed
     /// buffers hit before that fix landed (see `create_triple_buffer`'s
@@ -697,18 +590,19 @@ mod flamegraph_tests {
     /// assertion cleanly instead of aborting the test process.
     #[test]
     fn surface_textures_created_with_flamegraph_feature_support_copy_texture_to_buffer_readback() {
-        let Some((device, queue)) = create_headless_device() else {
+        let Some(gpu) = headless_gpu() else {
             eprintln!(
                 "skipping surface_textures_created_with_flamegraph_feature_support_copy_texture_to_buffer_readback: no wgpu adapter available in this environment"
             );
             return;
         };
+        let (device, queue) = (gpu.device.clone(), gpu.queue.clone());
 
-        let registry = SurfaceRegistry::new();
+        let registry = SurfaceRegistry::new(gpu);
         let format = wgpu::TextureFormat::Rgba8Unorm;
         let width = 16u32;
         let height = 16u32;
-        let surface_id = registry.create(&device, width, height, format);
+        let surface_id = registry.create(width, height, format);
 
         let snapshot = registry
             .front_texture_snapshot(surface_id)
@@ -764,7 +658,27 @@ mod flamegraph_tests {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::{SurfaceRegistry, TripleBuffer};
+
+    type G = crate::platform::cross::hal::wgpu::WgpuGpu;
+
+    /// [`create_headless_device`] wrapped as the renderer's GPU.
+    pub(super) fn headless_gpu() -> Option<Arc<G>> {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::all(),
+            flags: wgpu::InstanceFlags::default(),
+            backend_options: wgpu::BackendOptions::default(),
+            memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
+            display: None,
+        });
+        let adapter = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()))
+            .into_iter()
+            .next()?;
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
+        Some(Arc::new(G { instance, adapter, device, queue, desired_maximum_frame_latency: 2 }))
+    }
 
     /// Headless (surface-less) `wgpu::Device`/`Queue`; a missing adapter skips
     /// rather than fails the test in this sandbox.
@@ -784,16 +698,16 @@ mod tests {
 
     #[test]
     fn any_unconsumed_frame_follows_produce_then_composite() {
-        let Some((device, _queue)) = create_headless_device() else {
+        let Some(gpu) = headless_gpu() else {
             eprintln!("skip any_unconsumed_frame_follows_produce_then_composite: pas d'adaptateur wgpu");
             return;
         };
-        let registry = SurfaceRegistry::new();
+        let registry = SurfaceRegistry::new(gpu);
         assert!(!registry.any_unconsumed_frame(), "registre vide");
-        let id = registry.create(&device, 16, 16, wgpu::TextureFormat::Rgba8Unorm);
+        let id = registry.create(16, 16, wgpu::TextureFormat::Rgba8Unorm);
         assert!(!registry.any_unconsumed_frame(), "surface neuve, rien de publie");
 
-        registry.swap_rendering_ready_no_sync(id);
+        registry.swap_rendering_ready(id);
         assert!(registry.any_unconsumed_frame(), "trame publiee, pas encore composee");
 
         assert!(registry.swap_ready_display_if_new(id));
@@ -802,22 +716,22 @@ mod tests {
 
     #[test]
     fn take_new_frame_is_an_edge_not_a_level() {
-        let Some((device, _queue)) = create_headless_device() else {
+        let Some(gpu) = headless_gpu() else {
             eprintln!("skip take_new_frame_is_an_edge_not_a_level: pas d'adaptateur wgpu");
             return;
         };
-        let registry = SurfaceRegistry::new();
+        let registry = SurfaceRegistry::new(gpu);
         assert!(!registry.take_new_frame(), "registre vide");
-        let id = registry.create(&device, 16, 16, wgpu::TextureFormat::Rgba8Unorm);
+        let id = registry.create(16, 16, wgpu::TextureFormat::Rgba8Unorm);
         assert!(!registry.take_new_frame(), "surface neuve, rien de publie");
 
-        registry.swap_rendering_ready_no_sync(id);
+        registry.swap_rendering_ready(id);
         assert!(registry.take_new_frame(), "trame publiee");
         // Jamais composee : le niveau reste vrai, le front doit etre retombe.
         assert!(registry.any_unconsumed_frame(), "toujours pas composee");
         assert!(!registry.take_new_frame(), "un front, pas un niveau");
 
-        registry.swap_rendering_ready_no_sync(id);
+        registry.swap_rendering_ready(id);
         assert!(registry.take_new_frame(), "trame suivante");
     }
 
@@ -839,7 +753,7 @@ mod tests {
     impl Model {
         fn new() -> Self {
             Self {
-                state: TripleBuffer::pack_state(0, 1, 2),
+                state: TripleBuffer::<G>::pack_state(0, 1, 2),
                 contents: [0; 3],
                 generation: 0,
                 last_composited: 0,
@@ -849,42 +763,42 @@ mod tests {
         /// External renderer draws `frame` into the rendering buffer, then swaps
         /// rendering ↔ ready (mirrors `swap_rendering_ready*`).
         fn produce(&mut self, frame: u32) {
-            let (rendering, ready, display) = TripleBuffer::unpack_state(self.state);
+            let (rendering, ready, display) = TripleBuffer::<G>::unpack_state(self.state);
             self.contents[rendering as usize] = frame;
-            self.state = TripleBuffer::pack_state(ready, rendering, display);
+            self.state = TripleBuffer::<G>::pack_state(ready, rendering, display);
             self.generation += 1;
         }
 
         /// Old, ungated compositor: always swaps ready ↔ display.
         fn composite_ungated(&mut self) {
-            let (rendering, ready, display) = TripleBuffer::unpack_state(self.state);
-            self.state = TripleBuffer::pack_state(rendering, display, ready);
+            let (rendering, ready, display) = TripleBuffer::<G>::unpack_state(self.state);
+            self.state = TripleBuffer::<G>::pack_state(rendering, display, ready);
         }
 
         /// New, gated compositor: swaps only when a new frame was produced
         /// (mirrors `swap_ready_display_if_new`).
         fn composite_gated(&mut self) {
-            if !SurfaceRegistry::should_composite_swap(self.generation, self.last_composited) {
+            if !SurfaceRegistry::<G>::should_composite_swap(self.generation, self.last_composited) {
                 return;
             }
-            let (rendering, ready, display) = TripleBuffer::unpack_state(self.state);
-            self.state = TripleBuffer::pack_state(rendering, display, ready);
+            let (rendering, ready, display) = TripleBuffer::<G>::unpack_state(self.state);
+            self.state = TripleBuffer::<G>::pack_state(rendering, display, ready);
             self.last_composited = self.generation;
         }
 
         /// The frame the compositor would currently display.
         fn displayed_frame(&self) -> u32 {
-            let (_, _, display) = TripleBuffer::unpack_state(self.state);
+            let (_, _, display) = TripleBuffer::<G>::unpack_state(self.state);
             self.contents[display as usize]
         }
     }
 
     #[test]
     fn should_composite_swap_only_on_new_generation() {
-        assert!(!SurfaceRegistry::should_composite_swap(0, 0));
-        assert!(!SurfaceRegistry::should_composite_swap(5, 5));
-        assert!(SurfaceRegistry::should_composite_swap(1, 0));
-        assert!(SurfaceRegistry::should_composite_swap(6, 5));
+        assert!(!SurfaceRegistry::<G>::should_composite_swap(0, 0));
+        assert!(!SurfaceRegistry::<G>::should_composite_swap(5, 5));
+        assert!(SurfaceRegistry::<G>::should_composite_swap(1, 0));
+        assert!(SurfaceRegistry::<G>::should_composite_swap(6, 5));
     }
 
     #[test]
@@ -895,7 +809,7 @@ mod tests {
         for frame in 1..=20u32 {
             m.produce(frame);
             m.composite_gated();
-            let (r, ready, d) = TripleBuffer::unpack_state(m.state);
+            let (r, ready, d) = TripleBuffer::<G>::unpack_state(m.state);
             assert!(r != ready && ready != d && d != r, "roles collided: {:?}", (r, ready, d));
         }
     }
