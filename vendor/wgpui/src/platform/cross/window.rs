@@ -562,7 +562,7 @@ impl PlatformWindow for CrossWindow {
         self.0
             .renderer
             .get()
-            .map(|renderer| renderer.borrow().gpu_memory_snapshot())
+            .and_then(|renderer| renderer.borrow().gpu_memory_snapshot())
     }
 
     #[cfg(feature = "flamegraph")]
@@ -570,7 +570,7 @@ impl PlatformWindow for CrossWindow {
         self.0
             .renderer
             .get()
-            .map(|renderer| renderer.borrow().gpu_device_and_queue())
+            .and_then(|renderer| renderer.borrow().gpu_device_and_queue())
     }
 
     fn gpu_specs(&self) -> Option<crate::GpuSpecs> {

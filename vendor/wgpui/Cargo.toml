@@ -22,6 +22,8 @@ autoexamples = false
 # (`RendererBackend`). `wgpu` est le backend historique ; sans lui, aucune dépendance wgpu.
 default = ["font-kit", "wgpu"]
 wgpu = ["dep:wgpu", "dep:ash", "dep:windows-core"]
+# GPUI-3D : renderer UI Vulkan natif (ash), sans wgpu. Shaders traduits par naga au build.
+vulkan = ["dep:ash", "dep:ash-window", "dep:naga"]
 test-support = [
     "leak-detection",
     "collections/test-support",
@@ -136,6 +138,7 @@ wgpu = { version = "30", optional = true, default-features = false, features = [
 ] }
 # GPUI-3D : poignées Vulkan brutes exposées aux moteurs natifs (même version que wgpu-hal 30).
 ash = { version = "0.38", optional = true }
+ash-window = { version = "0.13", optional = true }
 priority-threadpool = { git = "https://github.com/tristanpoland/priority-threadpool", rev = "bb1ab91" }
 arboard = "3.6.1"
 font-kit = { version = "0.14.3", optional = true }
@@ -169,6 +172,10 @@ windows-core = { version = "0.62", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 x11-dl = "2.21.0"
+
+[build-dependencies]
+# GPUI-3D : WGSL → SPIR-V hors ligne (feature `vulkan`), même version que wgpu 30.
+naga = { version = "30", optional = true, features = ["wgsl-in", "spv-out"] }
 
 [dev-dependencies]
 backtrace = "0.3"

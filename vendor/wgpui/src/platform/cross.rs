@@ -1,6 +1,6 @@
 // Sans aucun backend de rendu compilé, la couche GPU générique n'a aucune instance : code
 // mort et chemins inatteignables attendus.
-#![cfg_attr(not(feature = "wgpu"), allow(dead_code, unreachable_code, unused_variables))]
+#![cfg_attr(not(any(feature = "wgpu", feature = "vulkan")), allow(dead_code, unreachable_code, unused_variables))]
 
 pub mod atlas;
 pub mod dispatcher;
@@ -12,8 +12,12 @@ pub mod render_context;
 pub mod renderer;
 pub mod resize_detector;
 pub mod slab;
+// WGSL composé à l'exécution pour wgpu ; les backends natifs le reçoivent compilé par build.rs.
+#[cfg(any(feature = "wgpu", test))]
 pub mod shaders;
 pub mod slab_gpu;
+// Sans wgpu, aucune API publique de surface 3D ne l'alimente encore (élément `WgpuSurface`).
+#[cfg_attr(not(feature = "wgpu"), allow(dead_code))]
 pub mod surface_registry;
 pub mod text_system;
 pub mod window;

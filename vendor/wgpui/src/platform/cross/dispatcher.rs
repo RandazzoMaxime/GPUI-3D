@@ -7,6 +7,7 @@ use priority_threadpool::ThreadPool;
 
 pub enum CrossEvent {
     WakeUp,
+    #[cfg_attr(not(feature = "wgpu"), allow(dead_code))]
     SurfacePresent(winit::window::WindowId),
     SingleInstanceActivated,
     CloseWindow(winit::window::WindowId),

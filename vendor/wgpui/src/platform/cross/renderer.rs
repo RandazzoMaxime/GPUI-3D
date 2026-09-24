@@ -2831,6 +2831,9 @@ impl<G: Gpu> Renderer<G> {
         crate::render_stats::count("resize: reconfigure");
         let present_mode = G::swapchain_present_mode(&self.swapchain);
         self.reconfigure_surface(width, height, present_mode);
+        // Vulkan impose la taille courante de la fenêtre à la swapchain, qui peut différer
+        // de la taille annoncée par `Resized` ; les cibles suivent la swapchain.
+        let (width, height) = self.surface_size();
         let format = G::swapchain_format(&self.swapchain);
 
         // Recreate persistent framebuffer at new size

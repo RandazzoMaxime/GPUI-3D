@@ -21,6 +21,8 @@ use crate::{GpuSpecs, WindowPresentMode};
 
 #[cfg(feature = "wgpu")]
 pub(crate) mod wgpu;
+#[cfg(feature = "vulkan")]
+pub(crate) mod vulkan;
 
 /// Usages d'un buffer (combinables par `|`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -120,6 +122,7 @@ pub(crate) enum ShaderId {
 
 impl ShaderId {
     /// Nom dans [`super::shaders::SHADERS`].
+    #[cfg_attr(not(feature = "wgpu"), allow(dead_code))]
     pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Quads => "quads",
@@ -166,6 +169,7 @@ pub(crate) enum LoadOp {
 }
 
 pub(crate) struct PassDesc<'a, G: Gpu> {
+    #[cfg_attr(not(feature = "wgpu"), allow(dead_code))]
     pub(crate) label: &'static str,
     pub(crate) target: &'a G::TextureView,
     pub(crate) load: LoadOp,
@@ -342,6 +346,7 @@ pub(crate) trait GpuProfiler<G: Gpu>: Default {
 
 /// Profileur vide des backends sans profilage GPU.
 #[cfg(feature = "flamegraph")]
+#[cfg_attr(not(feature = "vulkan"), allow(dead_code))]
 #[derive(Default)]
 pub(crate) struct NoProfiler;
 

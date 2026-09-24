@@ -18,6 +18,8 @@ use super::{
     render_context::{WgpuContext, WgpuOptions},
     renderer::WgpuRenderer,
 };
+#[cfg(feature = "vulkan")]
+use super::{atlas::Atlas, hal::vulkan::VulkanGpu, render_context::RenderContext, renderer::Renderer};
 
 #[cfg(all(target_family = "wasm", not(feature = "wgpu")))]
 compile_error!("gpui-ce en wasm exige la feature `wgpu` (seul backend disponible dans un navigateur).");
@@ -30,15 +32,32 @@ pub enum RendererBackend {
     /// par [`WgpuOptions`].
     #[cfg(feature = "wgpu")]
     Wgpu(WgpuOptions),
+    /// Vulkan 1.3 natif (ash), sans wgpu : GPU discret de préférence.
+    #[cfg(feature = "vulkan")]
+    Vulkan,
     #[doc(hidden)]
     Absent(Infallible),
 }
 
 impl RendererBackend {
-    /// Premier backend compilé, dans l'ordre de déclaration ; `None` si aucun.
+    /// Backend nommé par `GPUI_RENDERER` (`wgpu`, `vulkan`) s'il est compilé, sinon le
+    /// premier compilé dans l'ordre de déclaration ; `None` si aucun.
     pub fn compiled_default() -> Option<Self> {
+        let requested = std::env::var("GPUI_RENDERER").unwrap_or_default();
+        #[cfg(feature = "vulkan")]
+        if requested.eq_ignore_ascii_case("vulkan") {
+            return Some(Self::Vulkan);
+        }
         #[cfg(feature = "wgpu")]
-        return Some(Self::Wgpu(WgpuOptions::default()));
+        if requested.is_empty() || requested.eq_ignore_ascii_case("wgpu") {
+            return Some(Self::Wgpu(WgpuOptions::default()));
+        }
+        if !requested.is_empty() {
+            log::error!("GPUI_RENDERER={requested} : backend non compilé dans ce binaire");
+            return None;
+        }
+        #[cfg(feature = "vulkan")]
+        return Some(Self::Vulkan);
         #[allow(unreachable_code)]
         None
     }
@@ -49,6 +68,8 @@ impl RendererBackend {
 pub(crate) enum GpuContext {
     #[cfg(feature = "wgpu")]
     Wgpu(Arc<WgpuContext>),
+    #[cfg(feature = "vulkan")]
+    Vulkan(Arc<RenderContext<VulkanGpu>>),
     #[allow(dead_code)]
     Absent(Infallible),
 }
@@ -57,6 +78,8 @@ pub(crate) enum GpuContext {
 pub(crate) enum WindowAtlas {
     #[cfg(feature = "wgpu")]
     Wgpu(Arc<WgpuAtlas>),
+    #[cfg(feature = "vulkan")]
+    Vulkan(Arc<Atlas<VulkanGpu>>),
     #[allow(dead_code)]
     Absent(Infallible),
 }
@@ -65,6 +88,8 @@ pub(crate) enum WindowAtlas {
 pub(crate) enum WindowRenderer {
     #[cfg(feature = "wgpu")]
     Wgpu(WgpuRenderer),
+    #[cfg(feature = "vulkan")]
+    Vulkan(Renderer<VulkanGpu>),
     #[allow(dead_code)]
     Absent(Infallible),
 }
@@ -75,6 +100,8 @@ macro_rules! dispatch {
         match $value {
             #[cfg(feature = "wgpu")]
             $enum::Wgpu($inner) => $body,
+            #[cfg(feature = "vulkan")]
+            $enum::Vulkan($inner) => $body,
             $enum::Absent(never) => match *never {},
         }
     };
@@ -87,12 +114,20 @@ impl GpuContext {
         match backend {
             #[cfg(feature = "wgpu")]
             RendererBackend::Wgpu(options) => Ok(Self::Wgpu(Arc::new(WgpuContext::new(options)?))),
+            #[cfg(feature = "vulkan")]
+            RendererBackend::Vulkan => Ok(Self::Vulkan(Arc::new(RenderContext::with_gpu(VulkanGpu::new()?)))),
             RendererBackend::Absent(never) => match *never {},
         }
     }
 
     pub(crate) fn new_atlas(&self) -> WindowAtlas {
-        dispatch!(self, GpuContext, context => WindowAtlas::Wgpu(Arc::new(WgpuAtlas::new(context.gpu.clone()))))
+        match self {
+            #[cfg(feature = "wgpu")]
+            Self::Wgpu(context) => WindowAtlas::Wgpu(Arc::new(WgpuAtlas::new(context.gpu.clone()))),
+            #[cfg(feature = "vulkan")]
+            Self::Vulkan(context) => WindowAtlas::Vulkan(Arc::new(Atlas::new(context.gpu.clone()))),
+            Self::Absent(never) => match *never {},
+        }
     }
 
     /// Renderer d'une fenêtre de `width`×`height` pixels physiques, sur l'atlas de la fenêtre.
@@ -112,9 +147,19 @@ impl GpuContext {
                 width,
                 height,
             )?)),
+            #[cfg(feature = "vulkan")]
+            (Self::Vulkan(context), WindowAtlas::Vulkan(atlas)) => Ok(WindowRenderer::Vulkan(Renderer::new(
+                context.clone(),
+                window,
+                atlas.clone(),
+                width,
+                height,
+            )?)),
             (Self::Absent(never), _) => match *never {},
             #[allow(unreachable_patterns)]
             (_, WindowAtlas::Absent(never)) => match *never {},
+            #[allow(unreachable_patterns)]
+            _ => Err(anyhow::anyhow!("atlas et contexte GPU de backends différents")),
         }
     }
 }
@@ -162,13 +207,20 @@ impl WindowRenderer {
         dispatch!(self, WindowRenderer, renderer => renderer.take_new_surface_frame())
     }
 
+    /// Profilage GPU : wgpu seulement.
     #[cfg(feature = "flamegraph")]
-    pub(crate) fn gpu_memory_snapshot(&self) -> crate::GpuMemorySnapshot {
-        dispatch!(self, WindowRenderer, renderer => renderer.gpu_memory_snapshot())
+    pub(crate) fn gpu_memory_snapshot(&self) -> Option<crate::GpuMemorySnapshot> {
+        match self {
+            Self::Wgpu(renderer) => Some(renderer.gpu_memory_snapshot()),
+            _ => None,
+        }
     }
 
     #[cfg(feature = "flamegraph")]
-    pub(crate) fn gpu_device_and_queue(&self) -> (wgpu::Device, wgpu::Queue) {
-        dispatch!(self, WindowRenderer, renderer => renderer.gpu_device_and_queue())
+    pub(crate) fn gpu_device_and_queue(&self) -> Option<(wgpu::Device, wgpu::Queue)> {
+        match self {
+            Self::Wgpu(renderer) => Some(renderer.gpu_device_and_queue()),
+            _ => None,
+        }
     }
 }
