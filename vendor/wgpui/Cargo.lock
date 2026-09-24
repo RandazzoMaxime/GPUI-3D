@@ -1987,6 +1987,7 @@ dependencies = [
  "accesskit",
  "anyhow",
  "arboard",
+ "ash",
  "async-task",
  "backtrace",
  "bincode",

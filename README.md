@@ -92,3 +92,30 @@ Chercher `GPUI-3D` dans `vendor/wgpui` pour rebaser ces patchs.
 Copier le dossier du moteur voulu, remplacer `CUBE_*` et le shader, garder le
 `Renderer` : `new(surface)` crée les ressources, `render(surface, scene)` encode une
 trame et la publie. L'UI se compose dans `shell/src/lib.rs` (`Shell::render`).
+
+## Performance : défilement continu (`bench/`)
+
+`scroll-bench` : client mail (10 000 messages, barre latérale, panneau de lecture) qui
+défile en continu ; mesure CPU %, instructions et cycles par trame (indépendants de la
+fréquence CPU).
+
+```bash
+cargo build -p scroll-bench --profile profiling
+BENCH_MODE=cached BENCH_ROWS=1 ./target/profiling/scroll-bench
+```
+
+`BENCH_MODE=root|cached` (tout dans une vue / panneaux `.cached()`), `BENCH_ROWS=1`
+(chaque ligne est une vue `.cached()`), `BENCH_SPEED` (px/trame), `WGPUI_RENDER_STATS=1`
+(détail par phase et raisons des rejets de cache).
+
+Patchs `GPUI-3D` du fork (chacun désactivable pour comparer) :
+
+| Variable | Effet |
+|---|---|
+| `GPUI_VIEW_TRANSLATE` | une vue `.cached()` déplacée ou recoupée est rejouée translatée au lieu d'être reconstruite (`0` : amont, `rebuild` : référence de parité) |
+| `GPUI_BLOCK_REPLAY` | une plage rejouée réserve un seul créneau dans le `BoundsTree` au lieu d'une insertion par primitive |
+| `GPUI_SORT_CACHED` | tri des primitives par paires (clé, indice) au lieu de déplacer chaque struct O(log n) fois |
+
+Mesuré (M1 Max, 60 Hz, médianes, lignes en vues) : 16,2 → 7,8 M instructions par trame,
+CPU 27,7 % → 17,9 %, rendu identique au pixel près. Tests :
+`cd vendor/wgpui && cargo test --lib --features test-support translated_reuse_tests`.

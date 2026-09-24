@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["shell", "GPUI-WGPU", "GPUI-METAL", "GPUI-VULKAN"]
+members = ["shell", "GPUI-WGPU", "GPUI-METAL", "GPUI-VULKAN", "bench"]
 exclude = ["vendor/wgpui", "vendor/priority-threadpool"]
 
 [workspace.dependencies]
@@ -39,3 +39,10 @@ opt-level = 3
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# Mesures et profilage : optimisé comme release, compilation rapide, symboles pour `sample`.
+[profile.profiling]
+inherits = "release"
+lto = false
+codegen-units = 16
+debug = "line-tables-only"
