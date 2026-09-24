@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
-members = ["shell", "GPUI-WGPU", "GPUI-METAL", "GPUI-VULKAN", "bench"]
-exclude = ["vendor/wgpui", "vendor/priority-threadpool"]
+members = ["shell", "GPUI-WGPU", "GPUI-METAL", "GPUI-VULKAN", "bench", "starter"]
+exclude = ["vendor/wgpui", "vendor/priority-threadpool", "vendor/gpui-component"]
 
 [workspace.dependencies]
 gpui = { package = "gpui-ce", path = "vendor/wgpui" }
