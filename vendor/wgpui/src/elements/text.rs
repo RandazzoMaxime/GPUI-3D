@@ -435,12 +435,13 @@ impl TextLayout {
                     return text_layout.size.unwrap();
                 }
 
-                let mut line_wrapper = cx.text_system().line_wrapper(
-                    text_style.font(),
-                    font_size,
-                    text_style.letter_spacing,
-                );
+                // Le wrapper ne sert qu'à tronquer : sans troncature, ni verrou ni police.
                 let (text, runs) = if let Some(truncate_width) = truncate_width {
+                    let mut line_wrapper = cx.text_system().line_wrapper(
+                        text_style.font(),
+                        font_size,
+                        text_style.letter_spacing,
+                    );
                     line_wrapper.truncate_line(
                         text.clone(),
                         truncate_width,

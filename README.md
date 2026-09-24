@@ -115,6 +115,16 @@ Patchs `GPUI-3D` du fork (chacun désactivable pour comparer) :
 | `GPUI_VIEW_TRANSLATE` | une vue `.cached()` déplacée ou recoupée est rejouée translatée au lieu d'être reconstruite (`0` : amont, `rebuild` : référence de parité) |
 | `GPUI_BLOCK_REPLAY` | une plage rejouée réserve un seul créneau dans le `BoundsTree` au lieu d'une insertion par primitive |
 | `GPUI_SORT_CACHED` | tri des primitives par paires (clé, indice) au lieu de déplacer chaque struct O(log n) fois |
+| `GPUI_BIND_GROUP_CACHE` | bind group de page d'atlas gardé d'une trame à l'autre au lieu d'un par lot de sprites |
+
+Sans interrupteur : glyphes au format GPU compact (88 octets au lieu de 168, dégradés et
+transformations dans une table annexe), `DecorationRuns` à 2 runs en place au lieu de 32
+(une ligne de texte pesait ~5 Ko), `LineWrapper` en `Box` et pris seulement pour tronquer.
+`GPUI_PRESENT_MODE=immediate` : fps débloqués, sans le plafond de 250 Hz de la boucle.
+
+Le banc rapporte aussi la régularité : intervalles entre trames (`p50/p95/p99/max_ms`,
+`hitches` > 2× médiane, `late` > 1,2× médiane) et temps CPU du fil principal par trame
+(`work_*`), qui sépare notre travail des attentes du compositeur.
 
 Mesuré (M1 Max, 60 Hz, médianes, lignes en vues) : 16,2 → 7,8 M instructions par trame,
 CPU 27,7 % → 17,9 %, rendu identique au pixel près. Tests :

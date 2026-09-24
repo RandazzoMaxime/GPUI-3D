@@ -136,7 +136,11 @@ type RowCache = Rc<RefCell<HashMap<usize, Entity<RowView>>>>;
 
 fn cached_rows(mails: &Rc<Vec<Mail>>, cache: &RowCache, range: std::ops::Range<usize>, cx: &mut App) -> Vec<AnyElement> {
     let mut cache = cache.borrow_mut();
-    cache.retain(|ix, _| *ix + 64 >= range.start && *ix < range.end + 64);
+    // `uniform_list` appelle aussi cette closure sur `0..1` pour mesurer une ligne :
+    // n'évincer que sur la vraie plage visible.
+    if range.len() > 1 && cache.len() > 256 {
+        cache.retain(|ix, _| *ix + 64 >= range.start && *ix < range.end + 64);
+    }
     let mut style = StyleRefinement::default();
     style.size.width = Some(gpui::relative(1.).into());
     style.size.height = Some(px(ROW_HEIGHT).into());
@@ -171,7 +175,10 @@ fn mail_list(
     if running {
         offset.set((offset.get() + *SPEED) % max);
         frames.set(frames.get() + 1);
-        window.request_animation_frame();
+        note_frame();
+        if !pump_root() {
+            window.request_animation_frame();
+        }
     } else if frames.get() == STOP_AT.unwrap_or(0) {
         frames.set(frames.get() + 1);
         eprintln!("READY offset={}", offset.get());
@@ -387,12 +394,128 @@ impl Render for CachedMode {
     }
 }
 
-struct Root(AnyView);
+/// Vitrine statique des glyphes « non unis » (dégradé, transformation) : parité pixel
+/// du format compact des sprites.
+struct Gallery;
+
+const ARROW_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 2 L22 12 L16 12 L16 22 L8 22 L8 12 L2 12 Z" fill="black"/></svg>"#;
+
+struct Assets;
+
+impl gpui::AssetSource for Assets {
+    fn load(&self, path: &str) -> gpui::Result<Option<std::borrow::Cow<'static, [u8]>>> {
+        Ok((path == "arrow.svg").then(|| ARROW_SVG.as_bytes().into()))
+    }
+    fn list(&self, _: &str) -> gpui::Result<Vec<SharedString>> {
+        Ok(vec!["arrow.svg".into()])
+    }
+}
+
+impl Render for Gallery {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let arrow = |t: gpui::Transformation| {
+            gpui::svg().path("arrow.svg").size(px(96.)).text_color(rgb(0x2255cc)).with_transformation(t)
+        };
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap_6()
+            .bg(rgb(0xffffff))
+            .child(
+                div()
+                    .text_size(px(64.))
+                    .font_weight(FontWeight::BOLD)
+                    .text_gradient_horizontal(
+                        gpui::linear_color_stop(rgb(0xff0000), 0.0),
+                        gpui::linear_color_stop(rgb(0x0000ff), 1.0),
+                    )
+                    .child("DÉGRADÉ GPUI-3D"),
+            )
+            .child(div().text_size(px(40.)).text_color(rgb(0x118822)).child("Texte uni pour comparaison"))
+            .child(
+                div()
+                    .flex()
+                    .gap_8()
+                    .child(arrow(gpui::Transformation::rotate(gpui::radians(0.5))))
+                    .child(arrow(gpui::Transformation::scale(size(0.6, 0.6))))
+                    .child(arrow(gpui::Transformation::rotate(gpui::radians(-1.2)))),
+            )
+    }
+}
+
+
+/// `BENCH_PUMP=root` : la racine redemande les trames, la liste n'est pas notifiée
+/// (elle est rejouée). Mesure le coût de la reconstruction de la vue liste elle-même.
+fn pump_root() -> bool {
+    static ROOT: std::sync::LazyLock<bool> =
+        std::sync::LazyLock::new(|| std::env::var("BENCH_PUMP").is_ok_and(|v| v == "root"));
+    *ROOT
+}
+
+struct Root(AnyView, Rc<Cell<u64>>);
 
 impl Render for Root {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        if pump_root() {
+            self.1.set(self.1.get() + 1);
+            note_frame();
+            window.request_animation_frame();
+        }
         self.0.clone()
     }
+}
+
+thread_local! {
+    /// Horodatage de chaque trame pendant la mesure (`None` = pas encore commencée).
+    /// Avec le temps CPU du fil principal : son écart d'une trame à l'autre est le travail
+    /// de la trame, sans les attentes (drawable, compositeur).
+    static FRAME_TIMES: RefCell<Option<Vec<(Instant, u64)>>> = const { RefCell::new(None) };
+}
+
+fn thread_cpu_ns() -> u64 {
+    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) };
+    ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64
+}
+
+fn note_frame() {
+    FRAME_TIMES.with(|times| {
+        if let Some(times) = times.borrow_mut().as_mut() {
+            times.push((Instant::now(), thread_cpu_ns()));
+        }
+    });
+}
+
+/// Régularité : intervalles entre trames (ms) — médiane, p95, p99, max, et nombre
+/// d'à-coups (intervalle > 2 × médiane).
+fn frame_pacing() -> String {
+    let times = FRAME_TIMES.with(|t| t.borrow_mut().take()).unwrap_or_default();
+    let mut gaps: Vec<f64> = times.windows(2).map(|w| (w[1].0 - w[0].0).as_secs_f64() * 1000.0).collect();
+    let mut work: Vec<f64> = times.windows(2).map(|w| (w[1].1 - w[0].1) as f64 / 1e6).collect();
+    if gaps.is_empty() {
+        return String::new();
+    }
+    gaps.sort_by(f64::total_cmp);
+    work.sort_by(f64::total_cmp);
+    let q = |v: &[f64], p: f64| v[((v.len() - 1) as f64 * p).round() as usize];
+    let median = q(&gaps, 0.5);
+    let hitches = gaps.iter().filter(|g| **g > 2.0 * median).count();
+    let late = gaps.iter().filter(|g| **g > 1.2 * median).count();
+    let work_median = q(&work, 0.5);
+    let work_spikes = work.iter().filter(|w| **w > 2.0 * work_median).count();
+    format!(
+        " p50_ms={:.3} p95_ms={:.3} p99_ms={:.3} max_ms={:.3} hitches={hitches} late={late} work_p50_ms={:.3} work_p99_ms={:.3} work_max_ms={:.3} work_spikes={work_spikes}",
+        median,
+        q(&gaps, 0.95),
+        q(&gaps, 0.99),
+        gaps[gaps.len() - 1],
+        work_median,
+        q(&work, 0.99),
+        work[work.len() - 1],
+    )
 }
 
 /// Instructions retirées et cycles du process (tous fils) : indépendants de la
@@ -421,14 +544,16 @@ fn main() {
     let mode = std::env::var("BENCH_MODE").unwrap_or_else(|_| "root".into());
     let secs: f64 = std::env::var("BENCH_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(8.0);
     let frames = Rc::new(Cell::new(0u64));
-    Application::new().run(move |cx: &mut App| {
+    Application::new().with_assets(Assets).run(move |cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(1400.), px(900.)), cx);
         let options = WindowOptions { window_bounds: Some(WindowBounds::Windowed(bounds)), ..Default::default() };
         let frames_view = frames.clone();
+        let frames_root = frames.clone();
         let mode_view = mode.clone();
         cx.open_window(options, move |_, cx: &mut App| {
-            let view: AnyView = 
-            if mode_view == "cached" {
+            let view: AnyView = if mode_view == "gallery" {
+                cx.new(|_| Gallery).into()
+            } else if mode_view == "cached" {
                 let list = cx.new(|_| ListView(ListState::new(frames_view)));
                 let view = |f: fn() -> AnyElement, cx: &mut App| AnyView::from(cx.new(|_| Static(f)));
                 cx.new(|cx| CachedMode {
@@ -442,20 +567,21 @@ fn main() {
             } else {
                 cx.new(|_| RootMode(ListState::new(frames_view))).into()
             };
-            cx.new(|_| Root(view))
+            cx.new(|_| Root(view, frames_root))
         })
         .expect("fenêtre");
         cx.activate(true);
         cx.spawn(async move |cx| {
             let warmup = Duration::from_secs(2);
             cx.background_executor().timer(warmup).await;
+            FRAME_TIMES.with(|t| *t.borrow_mut() = Some(Vec::with_capacity(1 << 16)));
             let (t0, cpu0, f0, (i0, c0)) = (Instant::now(), cpu_seconds(), frames.get(), instructions_cycles());
             cx.background_executor().timer(Duration::from_secs_f64(secs)).await;
             let (wall, cpu, n) = (t0.elapsed().as_secs_f64(), cpu_seconds() - cpu0, frames.get() - f0);
             let (i1, c1) = instructions_cycles();
             let per_frame = |v: u64| v as f64 / n.max(1) as f64 / 1e6;
             println!(
-                "RESULT mode={mode} rows={} translate={} speed={} frames={n} fps={:.1} cpu_pct={:.1} cpu_ms_per_frame={:.3} minstr_per_frame={:.2} mcycles_per_frame={:.2}",
+                "RESULT mode={mode} rows={} translate={} speed={} frames={n} fps={:.1} cpu_pct={:.1} cpu_ms_per_frame={:.3} minstr_per_frame={:.2} mcycles_per_frame={:.2}{}",
                 std::env::var("BENCH_ROWS").unwrap_or_else(|_| "0".into()),
                 std::env::var("GPUI_VIEW_TRANSLATE").unwrap_or_else(|_| "1".into()),
                 std::env::var("BENCH_SPEED").unwrap_or_else(|_| "6".into()),
@@ -464,6 +590,7 @@ fn main() {
                 1000.0 * cpu / n.max(1) as f64,
                 per_frame(i1 - i0),
                 per_frame(c1 - c0),
+                frame_pacing(),
             );
             cx.update(|cx| cx.quit());
         })

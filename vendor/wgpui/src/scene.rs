@@ -128,7 +128,10 @@ pub(crate) struct Scene {
     pub(crate) quads: Vec<Quad>,
     pub(crate) paths: Vec<Path<ScaledPixels>>,
     pub(crate) underlines: Vec<Underline>,
-    pub(crate) monochrome_sprites: Vec<MonochromeSprite>,
+    /// GPUI-3D : forme GPU compacte (88 octets) ; `paint_operations` garde la forme riche.
+    pub(crate) monochrome_sprites: Vec<GpuMonochromeSprite>,
+    /// Dégradés et transformations des rares glyphes qui en ont (`GpuMonochromeSprite::extra`).
+    pub(crate) sprite_extras: Vec<GpuSpriteExtra>,
     pub(crate) polychrome_sprites: Vec<PolychromeSprite>,
     pub(crate) surfaces: Vec<PaintSurface>,
     /// Spliced slab references recorded this frame, in reservation order;
@@ -160,6 +163,7 @@ impl Default for Scene {
             paths: Vec::new(),
             underlines: Vec::new(),
             monochrome_sprites: Vec::new(),
+            sprite_extras: Vec::new(),
             polychrome_sprites: Vec::new(),
             surfaces: Vec::new(),
             layer_slab_spans: Vec::new(),
@@ -190,6 +194,7 @@ impl Scene {
         self.quads.clear();
         self.underlines.clear();
         self.monochrome_sprites.clear();
+        self.sprite_extras.clear();
         self.polychrome_sprites.clear();
         self.surfaces.clear();
         self.layer_slab_spans.clear();
@@ -579,7 +584,25 @@ impl Scene {
             Primitive::Quad(quad) => self.quads.push(quad.clone()),
             Primitive::Path(path) => self.paths.push(path.clone()),
             Primitive::Underline(underline) => self.underlines.push(underline.clone()),
-            Primitive::MonochromeSprite(sprite) => self.monochrome_sprites.push(sprite.clone()),
+            Primitive::MonochromeSprite(sprite) => {
+                let extra = if sprite.is_plain() {
+                    GpuMonochromeSprite::PLAIN
+                } else {
+                    self.sprite_extras.push(GpuSpriteExtra {
+                        text_color: sprite.text_color,
+                        transformation: sprite.transformation,
+                    });
+                    self.sprite_extras.len() as u32 - 1
+                };
+                self.monochrome_sprites.push(GpuMonochromeSprite {
+                    order: sprite.order,
+                    extra,
+                    bounds: sprite.bounds,
+                    content_mask: sprite.content_mask,
+                    color: sprite.text_color.solid,
+                    tile: sprite.tile,
+                });
+            }
             Primitive::PolychromeSprite(sprite) => self.polychrome_sprites.push(sprite.clone()),
             Primitive::Surface(surface) => self.surfaces.push(surface.clone()),
         }
@@ -1473,9 +1496,9 @@ struct BatchIterator<'a> {
     underlines: &'a [Underline],
     underlines_start: usize,
     underlines_iter: Peekable<slice::Iter<'a, Underline>>,
-    monochrome_sprites: &'a [MonochromeSprite],
+    monochrome_sprites: &'a [GpuMonochromeSprite],
     monochrome_sprites_start: usize,
-    monochrome_sprites_iter: Peekable<slice::Iter<'a, MonochromeSprite>>,
+    monochrome_sprites_iter: Peekable<slice::Iter<'a, GpuMonochromeSprite>>,
     polychrome_sprites: &'a [PolychromeSprite],
     polychrome_sprites_start: usize,
     polychrome_sprites_iter: Peekable<slice::Iter<'a, PolychromeSprite>>,
@@ -1697,7 +1720,7 @@ pub(crate) enum PrimitiveBatch<'a> {
     Underlines(&'a [Underline]),
     MonochromeSprites {
         texture_id: AtlasTextureId,
-        sprites: &'a [MonochromeSprite],
+        sprites: &'a [GpuMonochromeSprite],
     },
     PolychromeSprites {
         texture_id: AtlasTextureId,
@@ -1959,6 +1982,45 @@ impl TransformationMatrix {
 impl Default for TransformationMatrix {
     fn default() -> Self {
         Self::unit()
+    }
+}
+
+/// GPUI-3D : glyphe tel que le lit `mono_sprites_compact.wgsl` (88 octets au lieu de
+/// 168) : trier, copier et envoyer ~4 000 glyphes par trame coûte près de deux fois moins.
+#[derive(Clone, Debug, Copy, bytemuck::NoUninit)]
+#[repr(C)]
+pub(crate) struct GpuMonochromeSprite {
+    pub order: DrawOrder,
+    /// Index dans [`Scene::sprite_extras`], ou [`Self::PLAIN`].
+    pub extra: u32,
+    pub bounds: Bounds<ScaledPixels>,
+    pub content_mask: ContentMask<ScaledPixels>,
+    /// Couleur unie ; ignorée quand `extra` porte un dégradé.
+    pub color: Hsla,
+    pub tile: AtlasTile,
+}
+
+const _: () = assert!(std::mem::size_of::<GpuMonochromeSprite>() == 88);
+
+impl GpuMonochromeSprite {
+    /// Couleur unie, transformation identité : pas d'entrée dans `sprite_extras`.
+    pub const PLAIN: u32 = u32::MAX;
+}
+
+#[derive(Clone, Debug, Copy, bytemuck::NoUninit)]
+#[repr(C)]
+pub(crate) struct GpuSpriteExtra {
+    pub text_color: TextColor,
+    pub transformation: TransformationMatrix,
+}
+
+const _: () = assert!(std::mem::size_of::<GpuSpriteExtra>() == 96);
+
+impl MonochromeSprite {
+    fn is_plain(&self) -> bool {
+        matches!(self.text_color.tag, crate::TextColorTag::Solid)
+            && self.transformation.rotation_scale == [[1.0, 0.0], [0.0, 1.0]]
+            && self.transformation.translation == [0.0, 0.0]
     }
 }
 
@@ -2825,6 +2887,10 @@ mod slab_splice_tests {
         Entry::Mono(sprite.text_color.solid.h as u32)
     }
 
+    fn mono_gpu_entry(sprite: &GpuMonochromeSprite) -> Entry {
+        Entry::Mono(sprite.color.h as u32)
+    }
+
     fn path_entry(path: &Path<ScaledPixels>) -> Entry {
         Entry::Path(path.color.solid.h as u32)
     }
@@ -2841,7 +2907,7 @@ mod slab_splice_tests {
                     stream.extend(underlines.iter().map(underline_entry))
                 }
                 PrimitiveBatch::MonochromeSprites { sprites, .. } => {
-                    stream.extend(sprites.iter().map(mono_entry))
+                    stream.extend(sprites.iter().map(mono_gpu_entry))
                 }
                 _ => {}
             }
@@ -2865,7 +2931,7 @@ mod slab_splice_tests {
                         stream.extend(underlines.iter().map(underline_entry))
                     }
                     PrimitiveBatch::MonochromeSprites { sprites, .. } => {
-                        stream.extend(sprites.iter().map(mono_entry))
+                        stream.extend(sprites.iter().map(mono_gpu_entry))
                     }
                     _ => {}
                 },

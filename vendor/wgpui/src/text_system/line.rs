@@ -7,6 +7,12 @@ use derive_more::{Deref, DerefMut};
 use smallvec::SmallVec;
 use std::sync::Arc;
 
+/// GPUI-3D : deux runs en place, le reste sur le tas. Avec 32 en place, un `WrappedLine`
+/// pesait ~5 Ko (un `DecorationRun` porte un `TextColor` de 72 octets) et chaque mesure de
+/// texte le déplaçait plusieurs fois : ~15 % du fil principal quand la fenêtre se
+/// reconstruit. Presque toute ligne n'a qu'un ou deux runs.
+pub(crate) type DecorationRuns = SmallVec<[DecorationRun; 2]>;
+
 /// Set the text decoration for a run of text.
 #[derive(Debug, Clone)]
 pub struct DecorationRun {
@@ -34,7 +40,7 @@ pub struct ShapedLine {
     pub(crate) layout: Arc<LineLayout>,
     /// The text that was shaped for this line.
     pub text: SharedString,
-    pub(crate) decoration_runs: SmallVec<[DecorationRun; 32]>,
+    pub(crate) decoration_runs: DecorationRuns,
 }
 
 impl ShapedLine {
@@ -120,7 +126,7 @@ pub struct WrappedLine {
     pub(crate) layout: Arc<WrappedLineLayout>,
     /// The text that was shaped for this line.
     pub text: SharedString,
-    pub(crate) decoration_runs: SmallVec<[DecorationRun; 32]>,
+    pub(crate) decoration_runs: DecorationRuns,
 }
 
 impl WrappedLine {
@@ -596,3 +602,5 @@ fn aligned_origin_x(
         TextAlign::Right => origin.x + align_width - line_width,
     }
 }
+
+const _: () = assert!(std::mem::size_of::<WrappedLine>() <= 512);
