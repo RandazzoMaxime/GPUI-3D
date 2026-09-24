@@ -232,50 +232,6 @@ impl SurfaceRegistry {
         }
     }
 
-    /// Atomically swap ready and display buffers with GPU synchronization.
-    ///
-    /// Polls the GPU to check if the ready buffer's work is complete before swapping.
-    /// This ensures the compositor never samples incomplete frames.
-    ///
-    /// Returns `true` if a swap occurred, `false` if GPU work is incomplete (compositor
-    /// should reuse the current display buffer).
-    pub fn swap_ready_display(&self, _device: &wgpu::Device, id: SurfaceId) -> bool {
-        if let Some(tb) = self.surfaces.lock().unwrap().get_mut(&id) {
-            // Une vraie trame devient l'affichage : l'image conservee a travers
-            // la reallocation a fait son office.
-            tb.stale_display = None;
-            // Atomic swap: ready ↔ display
-            // NOTE: We do NOT call device.poll() here because:
-            // 1. The render thread owns the device and is actively using it
-            // 2. Calling poll from multiple threads causes driver contention ("device lost")
-            // 3. WGPU internally handles synchronization when textures are accessed
-            // 4. The triple-buffer lock-free swaps are already safe
-            let mut current = tb.state.load(Ordering::Acquire);
-            loop {
-                let (rendering, ready, display) = TripleBuffer::unpack_state(current);
-                let next = TripleBuffer::pack_state(rendering, display, ready);
-                match tb
-                    .state
-                    .compare_exchange(current, next, Ordering::AcqRel, Ordering::Acquire)
-                {
-                    Ok(_) => {
-                        // Record consumption here too, not just in
-                        // `swap_ready_display_if_new`. Producers use
-                        // `has_unconsumed_frame` for backpressure, and if this
-                        // path (the fast blit) left the composited generation
-                        // behind, it would look to them like their frames were
-                        // never being consumed.
-                        tb.last_composited_generation
-                            .store(tb.frame_generation.load(Ordering::Acquire), Ordering::Release);
-                        return true;
-                    }
-                    Err(updated) => current = updated,
-                }
-            }
-        }
-        false
-    }
-
     /// Get the rendering buffer's `TextureView` (what external code renders into).
     pub fn back_view(&self, id: SurfaceId) -> Option<wgpu::TextureView> {
         let surfaces = self.surfaces.lock().unwrap();
@@ -395,12 +351,6 @@ impl SurfaceRegistry {
     pub fn size(&self, id: SurfaceId) -> Option<(u32, u32)> {
         let surfaces = self.surfaces.lock().unwrap();
         surfaces.get(&id).map(|tb| (tb.width, tb.height))
-    }
-
-    /// Get the texture format for a surface.
-    pub fn format(&self, id: SurfaceId) -> Option<wgpu::TextureFormat> {
-        let surfaces = self.surfaces.lock().unwrap();
-        surfaces.get(&id).map(|tb| tb.format)
     }
 
     /// One surface's currently-displayed triple-buffer texture, snapshotted
@@ -587,16 +537,6 @@ impl SurfaceRegistry {
                 tb.last_composited_generation.load(Ordering::Acquire),
             )
         })
-    }
-
-    /// The current producer-swap generation for a surface (increments once per
-    /// presented frame). Returns `None` if the surface is not registered.
-    pub fn frame_generation(&self, id: SurfaceId) -> Option<u64> {
-        self.surfaces
-            .lock()
-            .unwrap()
-            .get(&id)
-            .map(|tb| tb.frame_generation.load(Ordering::Acquire))
     }
 
     /// Pure decision function used by [`swap_ready_display_if_new`](Self::swap_ready_display_if_new):

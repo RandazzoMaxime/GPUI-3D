@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 
-use crate::{DevicePixels, GpuSpecs, LayerKey, PlatformAtlas, Scene, Size, SurfaceId, WindowPresentMode};
+use crate::{DevicePixels, GpuSpecs, LayerKey, PlatformAtlas, Scene, Size, WindowPresentMode};
 
 #[cfg(feature = "wgpu")]
 use super::{
@@ -114,7 +114,6 @@ impl GpuContext {
                 atlas.clone(),
                 width,
                 height,
-                4,
             )?)),
             (Self::Absent(never), _) => match *never {},
             #[allow(unreachable_patterns)]
@@ -154,12 +153,8 @@ impl WindowRenderer {
         dispatch!(self, WindowRenderer, renderer => renderer.gpu_specs())
     }
 
-    pub(crate) fn get_pending_surfaces(&self) -> Option<Vec<SurfaceId>> {
-        dispatch!(self, WindowRenderer, renderer => renderer.get_pending_surfaces())
-    }
-
-    pub(crate) fn blit_surfaces_direct(&self, pending_surfaces: &[SurfaceId]) -> bool {
-        dispatch!(self, WindowRenderer, renderer => renderer.blit_surfaces_direct(pending_surfaces))
+    pub(crate) fn has_pending_surfaces(&self) -> bool {
+        dispatch!(self, WindowRenderer, renderer => renderer.has_pending_surfaces())
     }
 
     pub(crate) fn any_unconsumed_surface_frame(&self) -> bool {

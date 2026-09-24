@@ -9,6 +9,7 @@
 
 use super::*;
 use crate::Bounds as SceneBounds;
+use crate::{AtlasTile, Quad};
 use crate::Size as SceneSize;
 use crate::{
     ContentMask, Corners, DevicePixels, Edges, Hsla, Point, ScaledPixels, px, point,
@@ -171,7 +172,6 @@ fn headless_harness() -> Option<PixelHarness> {
     let pipelines = WgpuPipelines::new(
         context.as_ref(),
         &surface_configuration,
-        0,
         &globals_buffer,
         &color_adjustments_buffer,
     );

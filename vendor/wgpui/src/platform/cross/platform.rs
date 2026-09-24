@@ -1854,14 +1854,11 @@ fn pump_frame(window: &CrossWindow) {
         return;
     }
 
-    // Try fast blit path for pending surfaces.
-    //
     // `force_render` means "the cached-view fast paths cannot be
-    // trusted this frame, run a full compositor pass". That is only
-    // true when a blit was *attempted and failed* — a failed blit
-    // has already flipped ready->display for the pending surfaces
-    // (see `blit_surfaces_direct`) without getting their pixels onto
-    // the swapchain, so the compositor has to redraw.
+    // trusted this frame, run a full compositor pass": a surface
+    // published by `present_synced` must be recomposited under the
+    // chrome (the old direct-blit shortcut painted it over the chrome
+    // and was disabled 2026-09-03, then removed).
     //
     // Having no pending surfaces at all is the ordinary case (no
     // wgpu surfaces in the tree, or a render thread using
@@ -1873,9 +1870,7 @@ fn pump_frame(window: &CrossWindow) {
     let mut require_presentation = false;
     if let Some(renderer) = window.0.renderer.get() {
         let renderer_ref = renderer.borrow();
-        if let Some(pending_surfaces) = renderer_ref.get_pending_surfaces() {
-            force_render = !renderer_ref.blit_surfaces_direct(&pending_surfaces);
-        }
+        force_render = renderer_ref.has_pending_surfaces();
         require_presentation = renderer_ref.any_unconsumed_surface_frame();
     }
 

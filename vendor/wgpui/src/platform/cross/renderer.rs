@@ -1,48 +1,20 @@
-use std::collections::HashMap;
 use std::mem::ManuallyDrop;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 use collections::{FxHashMap, FxHashSet};
 use wgpu::util::DeviceExt;
 use wgpu::CurrentSurfaceTexture;
 
 use crate::{
-    AtlasTextureId, AtlasTile, BackdropFilter, DevicePixels, FilterBoundary, GpuSpecs,
-    GradientStop, LayerKey, LinearColorStop, MonochromeSprite, Pixels, PlatformAtlas,
-    PrimitiveBatch, Quad, ScaledPixels, Scene, TransformationMatrix, color, geometry,
+    AtlasTextureId, BackdropFilter, DevicePixels, FilterBoundary, GpuSpecs, LayerKey,
+    PrimitiveBatch, Scene, geometry,
     platform::cross::{
         atlas::WgpuAtlas,
         render_context::{WgpuContext, ensure_buffer_size},
         slab::{SlabKind, MIN_CLASS},
         slab_gpu::{self, GpuLayerTransform, SlabGpuBuffers, SlabRegistry, SyncPlan},
-        surface_registry::SurfaceId,
     },
 };
-
-const fn map_attributes<const N: usize>(
-    attribs: &'static [wgpu::VertexAttribute; N],
-    location_offset: u32,
-    offset_offset: wgpu::BufferAddress,
-) -> [wgpu::VertexAttribute; N] {
-    let mut result = [wgpu::VertexAttribute {
-        offset: 0,
-        shader_location: 0,
-        // NOTE(mdeand): Dummy format, will be overwritten.
-        format: wgpu::VertexFormat::Uint8x2,
-    }; N];
-    let mut i = 0;
-
-    while i < result.len() {
-        result[i] = wgpu::VertexAttribute {
-            offset: attribs[i].offset + offset_offset,
-            shader_location: attribs[i].shader_location + location_offset,
-            format: attribs[i].format,
-        };
-        i += 1;
-    }
-
-    result
-}
 
 /// Fragment-stage translate-undo edits, per shader: patterns that must occur
 /// exactly once in that shader's body and get rewritten to route through
@@ -142,157 +114,6 @@ fn slab_shader_source(name: &str, group: u32, body: &'static str) -> std::borrow
     std::borrow::Cow::Owned(source)
 }
 
-impl color::Hsla {
-    const VERTEX_ATTRIBUTES: &'static [wgpu::VertexAttribute; 4] = &[
-        wgpu::VertexAttribute {
-            offset: std::mem::offset_of!(color::Hsla, h) as wgpu::BufferAddress,
-            shader_location: 0,
-            format: wgpu::VertexFormat::Float32,
-        },
-        wgpu::VertexAttribute {
-            offset: std::mem::offset_of!(color::Hsla, s) as wgpu::BufferAddress,
-            shader_location: 1,
-            format: wgpu::VertexFormat::Float32,
-        },
-        wgpu::VertexAttribute {
-            offset: std::mem::offset_of!(color::Hsla, l) as wgpu::BufferAddress,
-            shader_location: 2,
-            format: wgpu::VertexFormat::Float32,
-        },
-        wgpu::VertexAttribute {
-            offset: std::mem::offset_of!(color::Hsla, a) as wgpu::BufferAddress,
-            shader_location: 3,
-            format: wgpu::VertexFormat::Float32,
-        },
-    ];
-}
-
-impl color::GradientStop {
-    const VERTEX_ATTRIBUTES: &'static [wgpu::VertexAttribute; 2] = &[
-        wgpu::VertexAttribute {
-            offset: std::mem::offset_of!(GradientStop, color) as wgpu::BufferAddress,
-            shader_location: 0,
-            format: wgpu::VertexFormat::Float32x4,
-        },
-        wgpu::VertexAttribute {
-            offset: std::mem::offset_of!(GradientStop, position) as wgpu::BufferAddress,
-            shader_location: 1,
-            format: wgpu::VertexFormat::Float32,
-        },
-    ];
-}
-
-impl color::LinearColorStop {
-    const VERTEX_ATTRIBUTES: &'static [wgpu::VertexAttribute; 2] = &[
-        wgpu::VertexAttribute {
-            offset: std::mem::offset_of!(LinearColorStop, color) as wgpu::BufferAddress,
-            shader_location: 0,
-            format: wgpu::VertexFormat::Float32x4,
-        },
-        wgpu::VertexAttribute {
-            offset: std::mem::offset_of!(LinearColorStop, percentage) as wgpu::BufferAddress,
-            shader_location: 1,
-            format: wgpu::VertexFormat::Float32,
-        },
-    ];
-}
-
-impl color::Background {
-    const VERTEX_ATTRIBUTES: &'static [wgpu::VertexAttribute; 9] = &{
-        let linear_color_stop_vertex_attributes = map_attributes(
-            GradientStop::VERTEX_ATTRIBUTES,
-            7,
-            std::mem::offset_of!(color::Background, colors) as wgpu::BufferAddress,
-        );
-
-        [
-            wgpu::VertexAttribute {
-                offset: std::mem::offset_of!(color::Background, tag) as wgpu::BufferAddress,
-                shader_location: 0,
-                format: wgpu::VertexFormat::Uint32,
-            },
-            wgpu::VertexAttribute {
-                offset: std::mem::offset_of!(color::Background, color_space) as wgpu::BufferAddress,
-                shader_location: 1,
-                format: wgpu::VertexFormat::Uint32,
-            },
-            wgpu::VertexAttribute {
-                offset: std::mem::offset_of!(color::Background, solid) as wgpu::BufferAddress,
-                shader_location: 2,
-                format: wgpu::VertexFormat::Uint32,
-            },
-            wgpu::VertexAttribute {
-                offset: std::mem::offset_of!(color::Background, param0) as wgpu::BufferAddress,
-                shader_location: 3,
-                format: wgpu::VertexFormat::Float32,
-            },
-            wgpu::VertexAttribute {
-                offset: std::mem::offset_of!(color::Background, param1) as wgpu::BufferAddress,
-                shader_location: 4,
-                format: wgpu::VertexFormat::Float32,
-            },
-            wgpu::VertexAttribute {
-                offset: std::mem::offset_of!(color::Background, param2) as wgpu::BufferAddress,
-                shader_location: 5,
-                format: wgpu::VertexFormat::Float32,
-            },
-            wgpu::VertexAttribute {
-                offset: std::mem::offset_of!(color::Background, param3) as wgpu::BufferAddress,
-                shader_location: 6,
-                format: wgpu::VertexFormat::Float32,
-            },
-            linear_color_stop_vertex_attributes[0],
-            linear_color_stop_vertex_attributes[1],
-            // wgpu::VertexAttribute {
-            //     offset: std::mem::offset_of!(color::Background, pad) as wgpu::BufferAddress,
-            //     shader_location: 9,
-            //     format: wgpu::VertexFormat::Uint8,
-            // },
-        ]
-    };
-}
-
-impl color::TextColor {
-    const VERTEX_ATTRIBUTES: &'static [wgpu::VertexAttribute; 7] = &{
-        let linear_color_stop_vertex_attributes = map_attributes(
-            LinearColorStop::VERTEX_ATTRIBUTES,
-            4,
-            std::mem::offset_of!(color::TextColor, colors) as wgpu::BufferAddress,
-        );
-
-        [
-            wgpu::VertexAttribute {
-                offset: std::mem::offset_of!(color::TextColor, tag) as wgpu::BufferAddress,
-                shader_location: 0,
-                format: wgpu::VertexFormat::Uint32,
-            },
-            wgpu::VertexAttribute {
-                offset: std::mem::offset_of!(color::TextColor, color_space) as wgpu::BufferAddress,
-                shader_location: 1,
-                format: wgpu::VertexFormat::Uint32,
-            },
-            wgpu::VertexAttribute {
-                offset: std::mem::offset_of!(color::TextColor, solid) as wgpu::BufferAddress,
-                shader_location: 2,
-                format: wgpu::VertexFormat::Uint32,
-            },
-            wgpu::VertexAttribute {
-                offset: std::mem::offset_of!(color::TextColor, gradient_angle_or_reserved)
-                    as wgpu::BufferAddress,
-                shader_location: 3,
-                format: wgpu::VertexFormat::Float32,
-            },
-            linear_color_stop_vertex_attributes[0],
-            linear_color_stop_vertex_attributes[1],
-            wgpu::VertexAttribute {
-                offset: std::mem::offset_of!(color::TextColor, pad) as wgpu::BufferAddress,
-                shader_location: 6,
-                format: wgpu::VertexFormat::Uint32,
-            },
-        ]
-    };
-}
-
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 struct GlobalParams {
@@ -305,103 +126,11 @@ struct GlobalParams {
 // byte size up to a multiple of its 16-byte binding alignment.
 const _: () = assert!(std::mem::size_of::<GlobalParams>() == 16);
 
-impl GlobalParams {
-    const VERTEX_ATTRIBUTES: &'static [wgpu::VertexAttribute; 3] = &[
-        wgpu::VertexAttribute {
-            offset: std::mem::offset_of!(GlobalParams, viewport_size) as wgpu::BufferAddress,
-            shader_location: 0,
-            format: wgpu::VertexFormat::Float32x2,
-        },
-        wgpu::VertexAttribute {
-            offset: std::mem::offset_of!(GlobalParams, premultimated_alpha) as wgpu::BufferAddress,
-            shader_location: 1,
-            format: wgpu::VertexFormat::Uint32,
-        },
-        wgpu::VertexAttribute {
-            offset: std::mem::offset_of!(GlobalParams, pad) as wgpu::BufferAddress,
-            shader_location: 2,
-            format: wgpu::VertexFormat::Uint32,
-        },
-    ];
-}
-
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct Bounds {
     origin: [f32; 2],
     size: [f32; 2],
-}
-
-impl geometry::Corners<ScaledPixels> {
-    const VERTEX_ATTRIBUTES: &'static [wgpu::VertexAttribute; 4] = &[
-        wgpu::VertexAttribute {
-            offset: std::mem::offset_of!(geometry::Corners<ScaledPixels>, top_left)
-                as wgpu::BufferAddress,
-            shader_location: 0,
-            format: wgpu::VertexFormat::Float32,
-        },
-        wgpu::VertexAttribute {
-            offset: std::mem::offset_of!(geometry::Corners<ScaledPixels>, top_right)
-                as wgpu::BufferAddress,
-            shader_location: 1,
-            format: wgpu::VertexFormat::Float32,
-        },
-        wgpu::VertexAttribute {
-            offset: std::mem::offset_of!(geometry::Corners<ScaledPixels>, bottom_right)
-                as wgpu::BufferAddress,
-            shader_location: 2,
-            format: wgpu::VertexFormat::Float32,
-        },
-        wgpu::VertexAttribute {
-            offset: std::mem::offset_of!(geometry::Corners<ScaledPixels>, bottom_left)
-                as wgpu::BufferAddress,
-            shader_location: 3,
-            format: wgpu::VertexFormat::Float32,
-        },
-    ];
-}
-
-impl geometry::Edges<ScaledPixels> {
-    const VERTEX_ATTRIBUTES: &'static [wgpu::VertexAttribute; 4] = &[
-        wgpu::VertexAttribute {
-            offset: std::mem::offset_of!(geometry::Edges<ScaledPixels>, top) as wgpu::BufferAddress,
-            shader_location: 0,
-            format: wgpu::VertexFormat::Float32,
-        },
-        wgpu::VertexAttribute {
-            offset: std::mem::offset_of!(geometry::Edges<ScaledPixels>, right)
-                as wgpu::BufferAddress,
-            shader_location: 1,
-            format: wgpu::VertexFormat::Float32,
-        },
-        wgpu::VertexAttribute {
-            offset: std::mem::offset_of!(geometry::Edges<ScaledPixels>, bottom)
-                as wgpu::BufferAddress,
-            shader_location: 2,
-            format: wgpu::VertexFormat::Float32,
-        },
-        wgpu::VertexAttribute {
-            offset: std::mem::offset_of!(geometry::Edges<ScaledPixels>, left)
-                as wgpu::BufferAddress,
-            shader_location: 3,
-            format: wgpu::VertexFormat::Float32,
-        },
-    ];
-}
-
-impl Bounds {
-    const VERTEX_ATTRIBUTES: &'static [wgpu::VertexAttribute; 2] = &[
-        wgpu::VertexAttribute {
-            offset: std::mem::offset_of!(Bounds, origin) as wgpu::BufferAddress,
-            shader_location: 0,
-            format: wgpu::VertexFormat::Float32x2,
-        },
-        wgpu::VertexAttribute {
-            offset: std::mem::offset_of!(Bounds, size) as wgpu::BufferAddress,
-            shader_location: 1,
-            format: wgpu::VertexFormat::Float32x2,
-        },
-    ];
 }
 
 #[repr(C)]
@@ -410,100 +139,6 @@ struct SurfaceParams {
     bounds: Bounds,
     content_mask: Bounds,
     corner_radii: [f32; 4],
-}
-
-impl Quad {
-    const VERTEX_ATTRIBUTES: &'static [wgpu::VertexAttribute; 22] = &{
-        let bounds_vertex_attributes = map_attributes(
-            Bounds::VERTEX_ATTRIBUTES,
-            2,
-            std::mem::offset_of!(Quad, bounds) as wgpu::BufferAddress,
-        );
-
-        let content_mask_vertex_attributes = map_attributes(
-            Bounds::VERTEX_ATTRIBUTES,
-            4,
-            std::mem::offset_of!(Quad, content_mask) as wgpu::BufferAddress,
-        );
-
-        let background_vertex_attributes = map_attributes(
-            color::Background::VERTEX_ATTRIBUTES,
-            6,
-            std::mem::offset_of!(Quad, background) as wgpu::BufferAddress,
-        );
-
-        let border_color_vertex_attributes = map_attributes(
-            color::Hsla::VERTEX_ATTRIBUTES,
-            11,
-            std::mem::offset_of!(Quad, border_color) as wgpu::BufferAddress,
-        );
-
-        let corner_radii_vertex_attributes = map_attributes(
-            geometry::Corners::<ScaledPixels>::VERTEX_ATTRIBUTES,
-            15,
-            std::mem::offset_of!(Quad, corner_radii) as wgpu::BufferAddress,
-        );
-
-        let border_widths_vertex_attributes = map_attributes(
-            geometry::Edges::<ScaledPixels>::VERTEX_ATTRIBUTES,
-            19,
-            std::mem::offset_of!(Quad, border_widths) as wgpu::BufferAddress,
-        );
-
-        [
-            wgpu::VertexAttribute {
-                offset: std::mem::offset_of!(Quad, order) as wgpu::BufferAddress,
-                shader_location: 0,
-                format: wgpu::VertexFormat::Uint32,
-            },
-            wgpu::VertexAttribute {
-                offset: std::mem::offset_of!(Quad, border_style) as wgpu::BufferAddress,
-                shader_location: 1,
-                format: wgpu::VertexFormat::Uint32,
-            },
-            bounds_vertex_attributes[0],
-            bounds_vertex_attributes[1],
-            content_mask_vertex_attributes[0],
-            content_mask_vertex_attributes[1],
-            background_vertex_attributes[0],
-            background_vertex_attributes[1],
-            background_vertex_attributes[2],
-            background_vertex_attributes[3],
-            border_color_vertex_attributes[0],
-            border_color_vertex_attributes[1],
-            border_color_vertex_attributes[2],
-            border_color_vertex_attributes[3],
-            corner_radii_vertex_attributes[0],
-            corner_radii_vertex_attributes[1],
-            corner_radii_vertex_attributes[2],
-            corner_radii_vertex_attributes[3],
-            border_widths_vertex_attributes[0],
-            border_widths_vertex_attributes[1],
-            border_widths_vertex_attributes[2],
-            border_widths_vertex_attributes[3],
-        ]
-    };
-}
-
-#[repr(C)]
-struct QuadsData {
-    globals: GlobalParams,
-}
-
-#[repr(C)]
-struct ShadowsData {
-    globals: GlobalParams,
-}
-
-#[repr(C)]
-struct PathRasterizationData {
-    globals: GlobalParams,
-}
-
-struct PathsData {
-    globals: GlobalParams,
-    t_sprite: wgpu::TextureView,
-    s_sprite: wgpu::Sampler,
 }
 
 /// Per-vertex data uploaded to the GPU for path rendering.
@@ -521,250 +156,6 @@ struct GpuPathVertex {
 // Stride expected by `array<GpuPathVertex>` in paths.wgsl's storage buffer.
 const _: () = assert!(std::mem::size_of::<GpuPathVertex>() == 48);
 
-struct UnderlinesData {
-    globals: GlobalParams,
-}
-
-struct MonoSpritesData {
-    globals: GlobalParams,
-    gamma_ratios: [f32; 4],
-    grayscale_enhanced_contrast: f32,
-    t_sprite: wgpu::TextureView,
-    s_sprite: wgpu::Sampler,
-}
-
-struct PolySpritesData {
-    globals: GlobalParams,
-    t_sprite: wgpu::TextureView,
-    s_sprite: wgpu::Sampler,
-}
-
-struct SurfacesData {
-    globals: GlobalParams,
-    surface_params: SurfaceParams,
-    t_y: wgpu::TextureView,
-    t_cb_cr: wgpu::TextureView,
-    s_texture: wgpu::Sampler,
-}
-
-struct PathSprite {
-    bounds: geometry::Bounds<f32>,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct PathRasterizationVertex {
-    xy_position: geometry::Point<ScaledPixels>,
-    st_position: geometry::Point<f32>,
-    color: color::Background,
-    bounds: geometry::Bounds<f32>,
-}
-
-impl PathRasterizationVertex {
-    const VERTEX_ATTRIBUTES: &'static [wgpu::VertexAttribute; 10] = &{
-        let color_vertex_attributes = map_attributes(
-            color::Background::VERTEX_ATTRIBUTES,
-            2,
-            std::mem::offset_of!(PathRasterizationVertex, color) as wgpu::BufferAddress,
-        );
-
-        let bounds_vertex_attributes = map_attributes(
-            Bounds::VERTEX_ATTRIBUTES,
-            8,
-            std::mem::offset_of!(PathRasterizationVertex, bounds) as wgpu::BufferAddress,
-        );
-
-        [
-            wgpu::VertexAttribute {
-                offset: std::mem::offset_of!(PathRasterizationVertex, xy_position)
-                    as wgpu::BufferAddress,
-                shader_location: 0,
-                format: wgpu::VertexFormat::Float32x2,
-            },
-            wgpu::VertexAttribute {
-                offset: std::mem::offset_of!(PathRasterizationVertex, st_position)
-                    as wgpu::BufferAddress,
-                shader_location: 1,
-                format: wgpu::VertexFormat::Float32x2,
-            },
-            color_vertex_attributes[0],
-            color_vertex_attributes[1],
-            color_vertex_attributes[2],
-            color_vertex_attributes[3],
-            color_vertex_attributes[4],
-            color_vertex_attributes[5],
-            bounds_vertex_attributes[0],
-            bounds_vertex_attributes[1],
-        ]
-    };
-
-    fn layout() -> wgpu::VertexBufferLayout<'static> {
-        wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<PathRasterizationVertex>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: Self::VERTEX_ATTRIBUTES,
-        }
-    }
-}
-
-impl AtlasTextureId {
-    const VERTEX_ATTRIBUTES: &'static [wgpu::VertexAttribute; 2] = &{
-        [
-            wgpu::VertexAttribute {
-                offset: std::mem::offset_of!(AtlasTextureId, index) as wgpu::BufferAddress,
-                format: wgpu::VertexFormat::Uint32,
-                shader_location: 0,
-            },
-            wgpu::VertexAttribute {
-                offset: std::mem::offset_of!(AtlasTextureId, kind) as wgpu::BufferAddress,
-                format: wgpu::VertexFormat::Uint32,
-                shader_location: 1,
-            },
-        ]
-    };
-}
-
-#[repr(C)]
-struct AtlasBounds {
-    origin: [i32; 2],
-    size: [i32; 2],
-}
-
-impl AtlasBounds {
-    const VERTEX_ATTRIBUTES: &'static [wgpu::VertexAttribute; 2] = &{
-        [
-            wgpu::VertexAttribute {
-                offset: std::mem::offset_of!(AtlasBounds, origin) as wgpu::BufferAddress,
-                format: wgpu::VertexFormat::Sint32x2,
-                shader_location: 0,
-            },
-            wgpu::VertexAttribute {
-                offset: std::mem::offset_of!(AtlasBounds, size) as wgpu::BufferAddress,
-                format: wgpu::VertexFormat::Sint32x2,
-                shader_location: 1,
-            },
-        ]
-    };
-}
-
-impl AtlasTile {
-    const VERTEX_ATTRIBUTES: &'static [wgpu::VertexAttribute; 6] = &{
-        let texture_id_vertex_attributes = map_attributes(
-            AtlasTextureId::VERTEX_ATTRIBUTES,
-            0,
-            std::mem::offset_of!(AtlasTile, texture_id) as wgpu::BufferAddress,
-        );
-
-        let bounds_vertex_attributes = map_attributes(
-            AtlasBounds::VERTEX_ATTRIBUTES,
-            4,
-            std::mem::offset_of!(AtlasTile, bounds) as wgpu::BufferAddress,
-        );
-
-        [
-            texture_id_vertex_attributes[0],
-            texture_id_vertex_attributes[1],
-            wgpu::VertexAttribute {
-                offset: std::mem::offset_of!(AtlasTile, tile_id) as wgpu::BufferAddress,
-                format: wgpu::VertexFormat::Uint32,
-                shader_location: 2,
-            },
-            wgpu::VertexAttribute {
-                offset: std::mem::offset_of!(AtlasTile, padding) as wgpu::BufferAddress,
-                format: wgpu::VertexFormat::Uint32,
-                shader_location: 3,
-            },
-            bounds_vertex_attributes[0],
-            bounds_vertex_attributes[1],
-        ]
-    };
-}
-
-impl TransformationMatrix {
-    const VERTEX_ATTRIBUTES: &'static [wgpu::VertexAttribute; 2] = &{
-        [
-            wgpu::VertexAttribute {
-                offset: std::mem::offset_of!(TransformationMatrix, rotation_scale)
-                    as wgpu::BufferAddress,
-                format: wgpu::VertexFormat::Float32x4,
-                shader_location: 0,
-            },
-            wgpu::VertexAttribute {
-                offset: std::mem::offset_of!(TransformationMatrix, translation)
-                    as wgpu::BufferAddress,
-                format: wgpu::VertexFormat::Float32x2,
-                shader_location: 1,
-            },
-        ]
-    };
-}
-
-impl MonochromeSprite {
-    const VERTEX_ATTRIBUTES: &'static [wgpu::VertexAttribute; 21] = &{
-        let bounds_vertex_attributes = map_attributes(
-            Bounds::VERTEX_ATTRIBUTES,
-            2,
-            std::mem::offset_of!(MonochromeSprite, bounds) as wgpu::BufferAddress,
-        );
-
-        let content_mask_vertex_attributes = map_attributes(
-            Bounds::VERTEX_ATTRIBUTES,
-            4,
-            std::mem::offset_of!(MonochromeSprite, content_mask) as wgpu::BufferAddress,
-        );
-
-        let text_color_vertex_attributes = map_attributes(
-            color::TextColor::VERTEX_ATTRIBUTES,
-            6,
-            std::mem::offset_of!(MonochromeSprite, text_color) as wgpu::BufferAddress,
-        );
-
-        let tile_vertex_attributes = map_attributes(
-            AtlasTile::VERTEX_ATTRIBUTES,
-            8,
-            std::mem::offset_of!(MonochromeSprite, tile) as wgpu::BufferAddress,
-        );
-
-        let transformation_matrix_vertex_attributes = map_attributes(
-            TransformationMatrix::VERTEX_ATTRIBUTES,
-            14,
-            std::mem::offset_of!(MonochromeSprite, transformation) as wgpu::BufferAddress,
-        );
-
-        [
-            wgpu::VertexAttribute {
-                offset: std::mem::offset_of!(MonochromeSprite, order) as wgpu::BufferAddress,
-                format: wgpu::VertexFormat::Uint32,
-                shader_location: 0,
-            },
-            wgpu::VertexAttribute {
-                offset: std::mem::offset_of!(MonochromeSprite, pad) as wgpu::BufferAddress,
-                format: wgpu::VertexFormat::Uint32,
-                shader_location: 1,
-            },
-            bounds_vertex_attributes[0],
-            bounds_vertex_attributes[1],
-            content_mask_vertex_attributes[0],
-            content_mask_vertex_attributes[1],
-            text_color_vertex_attributes[0],
-            text_color_vertex_attributes[1],
-            text_color_vertex_attributes[2],
-            text_color_vertex_attributes[3],
-            text_color_vertex_attributes[4],
-            text_color_vertex_attributes[5],
-            text_color_vertex_attributes[6],
-            tile_vertex_attributes[0],
-            tile_vertex_attributes[1],
-            tile_vertex_attributes[2],
-            tile_vertex_attributes[3],
-            tile_vertex_attributes[4],
-            tile_vertex_attributes[5],
-            transformation_matrix_vertex_attributes[0],
-            transformation_matrix_vertex_attributes[1],
-        ]
-    };
-}
-
 #[derive(Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 struct ColorAdjustments {
@@ -778,7 +169,6 @@ struct ColorAdjustments {
 const _: () = assert!(std::mem::size_of::<ColorAdjustments>() == 32);
 
 struct WgpuPipelines {
-    color_targets: Vec<Option<wgpu::ColorTargetState>>,
 
     quads_bind_group_layout: wgpu::BindGroupLayout,
     shadows_bind_group_layout: wgpu::BindGroupLayout,
@@ -817,7 +207,6 @@ impl WgpuPipelines {
     pub fn new(
         context: &WgpuContext,
         surface_configuration: &wgpu::SurfaceConfiguration,
-        _path_sample_count: u32,
         globals_buffer: &wgpu::Buffer,
         color_adjustments_buffer: &wgpu::Buffer,
     ) -> Self {
@@ -1313,7 +702,6 @@ impl WgpuPipelines {
         // --------------------------------------------------------------------
 
         Self {
-            color_targets: color_targets.to_vec(),
 
             quads_bind_group_layout,
             shadows_bind_group_layout,
@@ -1552,7 +940,6 @@ impl WgpuPipelines {
 }
 
 struct RenderingParameters {
-    path_sample_count: u32,
     gamma_ratios: [f32; 4],
     grayscale_enhanced_contrast: f32,
 }
@@ -2142,10 +1529,6 @@ impl RenderingParameters {
     fn from_env() -> Self {
         use std::env;
 
-        let path_sample_count = env::var("ZED_PATH_SAMPLE_COUNT")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(4);
         let gamma = env::var("ZED_FONTS_GAMMA")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -2159,25 +1542,10 @@ impl RenderingParameters {
             .max(0.0);
 
         Self {
-            path_sample_count,
             gamma_ratios,
             grayscale_enhanced_contrast,
         }
     }
-}
-
-/// Cached bounds information for fast surface blitting
-#[derive(Clone, Debug)]
-struct SurfaceBoundsEntry {
-    /// Screen-space bounds where the surface should be rendered
-    screen_bounds: geometry::Bounds<Pixels>,
-    /// Content mask for clipping
-    content_mask: geometry::Bounds<Pixels>,
-    /// Rounded silhouette applied to the mask, so the fast blit path paints
-    /// the same shape the compositor does.
-    corner_radii: [f32; 4],
-    /// Layout version when these bounds were computed (for staleness detection)
-    layout_version: u64,
 }
 
 /// Maximum nesting depth supported for CSS-style content `filter` groups
@@ -2199,8 +1567,6 @@ struct LayerTextureEntry {
     key: crate::LayerKey,
     /// The content generation baked in; compared against span tokens.
     content_token: u64,
-    /// The buffer extent the texture was created at, in scaled window pixels.
-    texture_bounds: crate::Bounds<crate::ScaledPixels>,
     last_used_frame: u64,
 }
 
@@ -2245,10 +1611,6 @@ pub struct WgpuRenderer {
     pipelines: WgpuPipelines,
     rendering_parameters: RenderingParameters,
 
-    // cache bind groups for each double-buffered surface (index 0/1)
-    surface_bind_groups:
-        Mutex<HashMap<crate::platform::cross::surface_registry::SurfaceId, [wgpu::BindGroup; 2]>>,
-
     // Persistent framebuffer for browser-canvas-style blitting
     persistent_framebuffer: Option<wgpu::Texture>,
     persistent_framebuffer_view: Option<wgpu::TextureView>,
@@ -2267,10 +1629,7 @@ pub struct WgpuRenderer {
     group_views: Vec<wgpu::TextureView>,
 
     // Bounds cache for fast surface blitting without compositor
-    surface_bounds_cache: Arc<Mutex<HashMap<SurfaceId, SurfaceBoundsEntry>>>,
 
-    // Layout version counter (incremented when compositor runs)
-    layout_version: Arc<AtomicU64>,
 
     // Per-layer persistent slab state (spec #94). The registry owns the
     // allocator and residency decisions; the buffers are the grow-only
@@ -2338,7 +1697,6 @@ impl WgpuRenderer {
         atlas: Arc<WgpuAtlas>,
         width: u32,
         height: u32,
-        path_sample_count: u32,
     ) -> anyhow::Result<Self>
     where
         WindowHandle: raw_window_handle::HasWindowHandle + raw_window_handle::HasDisplayHandle,
@@ -2478,7 +1836,6 @@ impl WgpuRenderer {
         let pipelines = WgpuPipelines::new(
             context.as_ref(),
             &surface_configuration,
-            path_sample_count,
             &globals_buffer,
             &color_adjustments_buffer,
         );
@@ -2543,7 +1900,6 @@ impl WgpuRenderer {
             backdrop_blur_sampler,
             pipelines,
             rendering_parameters: RenderingParameters::from_env(),
-            surface_bind_groups: Mutex::new(HashMap::new()),
             persistent_framebuffer: Some(persistent_framebuffer),
             persistent_framebuffer_view: Some(persistent_framebuffer_view),
             backdrop_blur_texture: Some(backdrop_blur_texture),
@@ -2552,8 +1908,6 @@ impl WgpuRenderer {
             glass_backdrop_copied_gen: 0,
             group_textures,
             group_views,
-            surface_bounds_cache: Arc::new(Mutex::new(HashMap::new())),
-            layout_version: Arc::new(AtomicU64::new(0)),
             slab_registry: SlabRegistry::new(),
             slab_buffers,
             slab_group_cache: SlabGroupCache::default(),
@@ -2697,7 +2051,6 @@ impl WgpuRenderer {
                 height,
                 key: target.key,
                 content_token: target.content_token,
-                texture_bounds: target.texture_bounds,
                 last_used_frame: self.layer_texture_frame,
             },
         );
@@ -3103,7 +2456,6 @@ impl WgpuRenderer {
             }
         }
 
-
         // keep track of which surface ids we rendered this frame
         let mut seen_surfaces: Vec<crate::platform::cross::surface_registry::SurfaceId> =
             Vec::new();
@@ -3332,10 +2684,6 @@ impl WgpuRenderer {
             }
         };
 
-        // Increment layout version - all bounds caches are now fresh
-        // IMPORTANT: Only increment after successful swapchain acquisition
-        // If we skip the frame, bounds remain valid
-        self.layout_version.fetch_add(1, Ordering::Release);
 
         // Slab bind state comes from the frame-to-frame cache, which needs
         // `&mut` access to the cache field — built before the legacy buffer
@@ -4334,51 +3682,6 @@ impl WgpuRenderer {
                                         ],
                                     };
 
-                                    // Cache bounds for fast surface blitting
-                                    // Surface bounds are in ScaledPixels (f32), store as Pixels for caching
-                                    self.surface_bounds_cache.lock().unwrap().insert(
-                                        *surface_id,
-                                        SurfaceBoundsEntry {
-                                            screen_bounds: geometry::Bounds {
-                                                origin: geometry::Point {
-                                                    x: Pixels(surface.bounds.origin.x.0),
-                                                    y: Pixels(surface.bounds.origin.y.0),
-                                                },
-                                                size: geometry::Size {
-                                                    width: Pixels(surface.bounds.size.width.0),
-                                                    height: Pixels(surface.bounds.size.height.0),
-                                                },
-                                            },
-                                            content_mask: geometry::Bounds {
-                                                origin: geometry::Point {
-                                                    x: Pixels(
-                                                        surface.content_mask.bounds.origin.x.0,
-                                                    ),
-                                                    y: Pixels(
-                                                        surface.content_mask.bounds.origin.y.0,
-                                                    ),
-                                                },
-                                                size: geometry::Size {
-                                                    width: Pixels(
-                                                        surface.content_mask.bounds.size.width.0,
-                                                    ),
-                                                    height: Pixels(
-                                                        surface.content_mask.bounds.size.height.0,
-                                                    ),
-                                                },
-                                            },
-                                            corner_radii: [
-                                                surface.corner_radii.top_left.0,
-                                                surface.corner_radii.top_right.0,
-                                                surface.corner_radii.bottom_right.0,
-                                                surface.corner_radii.bottom_left.0,
-                                            ],
-                                            layout_version: self
-                                                .layout_version
-                                                .load(Ordering::Acquire),
-                                        },
-                                    );
-
                                     let params_buffer = self.context.device.create_buffer_init(
                                         &wgpu::util::BufferInitDescriptor {
                                             label: Some("surface_params_buffer"),
@@ -4716,259 +4019,10 @@ impl WgpuRenderer {
         log::trace!("Renderer::draw: frame complete");
     }
 
-    /// Fast path: blit all visible surfaces in a single swapchain pass.
-    /// Returns true if successful, false if compositor should run.
-    pub fn blit_surfaces_direct(&self, pending_surfaces: &[SurfaceId]) -> bool {
-        // Ce chemin repeint les surfaces PAR-DESSUS le framebuffer compose ; il
-        // n'est juste que si rien n'est dessine au-dessus d'elles. Le
-        // chrome recouvre le globe et le verre : une image sur deux perdait le
-        // chrome (2026-09-03). Repli = dessin normal avec rejeu des caches.
-        if !pending_surfaces.is_empty() {
-            crate::render_stats::count("fast blit: disabled (chrome overlays surfaces)");
-            return false;
-        }
-        if pending_surfaces.is_empty() {
-            { crate::render_stats::count("fast blit: fail (no pending)"); return false; }
-        }
-
-        let layout_version = self.layout_version.load(Ordering::Acquire);
-        let mut visible_surfaces = {
-            let cache = self.surface_bounds_cache.lock().unwrap();
-
-            // Fast path is valid only when bounds are current.
-            if cache
-                .values()
-                .any(|entry| entry.layout_version != layout_version)
-            {
-                { crate::render_stats::count("fast blit: fail (layout version stale)"); return false; }
-            }
-
-            // Every pending surface must be currently visible with cached bounds.
-            if pending_surfaces
-                .iter()
-                .any(|surface_id| !cache.contains_key(surface_id))
-            {
-                { crate::render_stats::count("fast blit: fail (surface not in bounds cache)"); return false; }
-            }
-
-            cache
-                .iter()
-                .map(|(surface_id, entry)| {
-                    (
-                        *surface_id,
-                        entry.screen_bounds,
-                        entry.content_mask,
-                        entry.corner_radii,
-                    )
-                })
-                .collect::<Vec<_>>()
-        };
-
-        if visible_surfaces.is_empty() {
-            { crate::render_stats::count("fast blit: fail (no visible surface)"); return false; }
-        }
-
-        // Keep deterministic ordering.
-        visible_surfaces.sort_unstable_by_key(|(surface_id, _, _, _)| surface_id.0);
-
-        // Flip ready -> display for surfaces that actually rendered new frames.
-        for surface_id in pending_surfaces {
-            let _ = self
-                .context
-                .surface_registry
-                .swap_ready_display(&self.context.device, *surface_id);
-        }
-
-        // Acquire swapchain (handle retryable surface errors the same as regular draw).
-        let surface_texture = match self.surface.get_current_texture() {
-            CurrentSurfaceTexture::Success(t)
-            | CurrentSurfaceTexture::Suboptimal(t) => t,
-            CurrentSurfaceTexture::Outdated
-            | CurrentSurfaceTexture::Lost
-            | CurrentSurfaceTexture::Validation => {
-                self.reconfigure_surface();
-                match self.surface.get_current_texture() {
-                    CurrentSurfaceTexture::Success(t)
-                    | CurrentSurfaceTexture::Suboptimal(t) => t,
-                    other => {
-                        log::warn!(
-                            "Fast blit failed to acquire swapchain after reconfigure: {:?}",
-                            other
-                        );
-                        { crate::render_stats::count("fast blit: fail (no framebuffer)"); return false; }
-                    }
-                }
-            }
-            CurrentSurfaceTexture::Timeout => {
-                log::warn!("Fast blit failed: swapchain acquire timed out");
-                { crate::render_stats::count("fast blit: fail (swapchain acquire)"); return false; }
-            }
-            CurrentSurfaceTexture::Occluded => {
-                log::warn!("Fast blit failed: swapchain acquire occluded");
-                { crate::render_stats::count("fast blit: fail (swapchain acquire retry)"); return false; }
-            }
-        };
-
-        let mut encoder =
-            self.context
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("fast_surface_blit"),
-                });
-        // Le quad du globe se dessine dans le framebuffer persistant, jamais
-        // dans l'image de swapchain acquise : celle-ci date de 2-3 presentations
-        // et son chrome est perime (flicker au survol, 2026-09-03).
-        let (Some(framebuffer), Some(framebuffer_view)) = (
-            self.persistent_framebuffer.as_ref(),
-            self.persistent_framebuffer_view.as_ref(),
-        ) else {
-            { crate::render_stats::count("fast blit: fail (no front view)"); return false; }
-        };
-
-        {
-            // Only gets a timestamp span when a WgpuRenderer::draw-initiated
-            // frame is still in its `Recording` state (see
-            // `GpuQueryManager::reserve_pair` and `reserve_gpu_timestamps`'s
-            // doc comment) — blit_surfaces_direct can also run outside any
-            // open frame (the no-compositor fast path bypasses `draw()`
-            // entirely), in which case this is `None` and the pass simply
-            // isn't captured this round.
-            #[cfg(feature = "flamegraph")]
-            let flamegraph_fast_blit_pass = self.reserve_gpu_timestamps(
-                crate::SpanName::Static("fast_surface_blit_pass"),
-                crate::GpuPassKind::FastSurfaceBlit,
-            );
-
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("fast_surface_blit_pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: framebuffer_view,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load, // Preserve existing swapchain content
-                        store: wgpu::StoreOp::Store,
-                    },
-                    resolve_target: None,
-                    depth_slice: None,
-                })],
-                depth_stencil_attachment: None,
-                #[cfg(feature = "flamegraph")]
-                timestamp_writes: flamegraph_fast_blit_pass.as_ref().map(|reserved| reserved.writes()),
-                #[cfg(not(feature = "flamegraph"))]
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-
-            pass.set_pipeline(&self.pipelines.surfaces_pipeline);
-            pass.set_bind_group(0, &self.pipelines.globals_bind_group, &[]);
-
-            // Keep views and params buffers alive until pass ends (bind groups reference them).
-            let mut surface_views = Vec::new();
-            let mut surface_param_buffers = Vec::new();
-
-            for (surface_id, screen_bounds, content_mask, corner_radii) in &visible_surfaces {
-                let Some(view) = self.context.surface_registry.front_view(*surface_id) else {
-                    { crate::render_stats::count("fast blit: fail (8)"); return false; }
-                };
-
-                let params = SurfaceParams {
-                    bounds: Bounds {
-                        origin: [screen_bounds.origin.x.0, screen_bounds.origin.y.0],
-                        size: [screen_bounds.size.width.0, screen_bounds.size.height.0],
-                    },
-                    content_mask: Bounds {
-                        origin: [content_mask.origin.x.0, content_mask.origin.y.0],
-                        size: [content_mask.size.width.0, content_mask.size.height.0],
-                    },
-                    corner_radii: *corner_radii,
-                };
-
-                let params_buffer =
-                    self.context
-                        .device
-                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some("fast_blit_surface_params_buffer"),
-                            contents: bytemuck::bytes_of(&params),
-                            usage: wgpu::BufferUsages::UNIFORM,
-                        });
-
-                let surface_bind_group =
-                    self.context
-                        .device
-                        .create_bind_group(&wgpu::BindGroupDescriptor {
-                            label: Some("fast_blit_surface_bind_group"),
-                            layout: &self.pipelines.surfaces_bind_group_layout,
-                            entries: &[
-                                wgpu::BindGroupEntry {
-                                    binding: 0,
-                                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                                        buffer: &params_buffer,
-                                        offset: 0,
-                                        size: None,
-                                    }),
-                                },
-                                wgpu::BindGroupEntry {
-                                    binding: 1,
-                                    resource: wgpu::BindingResource::TextureView(&view),
-                                },
-                                wgpu::BindGroupEntry {
-                                    binding: 2,
-                                    resource: wgpu::BindingResource::Sampler(&self.surface_sampler),
-                                },
-                            ],
-                        });
-
-                pass.set_bind_group(1, &surface_bind_group, &[]);
-                pass.draw(0..4, 0..1);
-                surface_views.push(view);
-                surface_param_buffers.push(params_buffer);
-            }
-        }
-
-        encoder.copy_texture_to_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: framebuffer,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyTextureInfo {
-                texture: &surface_texture.texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::Extent3d {
-                width: self.surface_configuration.width,
-                height: self.surface_configuration.height,
-                depth_or_array_layers: 1,
-            },
-        );
-
-        let queue_guard = self.context.surface_registry.queue_lock();
-        self.context.queue.submit(Some(encoder.finish()));
-        self.context.queue.present(surface_texture);
-        drop(queue_guard);
-
-        // Clear redraw flags only for surfaces that presented fresh frames.
-        for surface_id in pending_surfaces {
-            self.context
-                .surface_registry
-                .clear_redraw_pending(&self.context.device, *surface_id);
-        }
-
-        crate::render_stats::count("fast blit: ok");
-        true
-    }
-
     /// Get list of surfaces that have pending redraws
-    pub fn get_pending_surfaces(&self) -> Option<Vec<SurfaceId>> {
-        let pending = self.context.surface_registry.get_pending_surfaces();
-        if pending.is_empty() {
-            None
-        } else {
-            Some(pending)
-        }
+    /// Une surface a publié par `present_synced` une trame pas encore composée.
+    pub fn has_pending_surfaces(&self) -> bool {
+        !self.context.surface_registry.get_pending_surfaces().is_empty()
     }
 
     pub fn any_unconsumed_surface_frame(&self) -> bool {
@@ -5079,13 +4133,6 @@ impl WgpuRenderer {
             self.slab_registry.request_rerecord(dropped_keys);
         }
 
-        // Invalidate bounds cache - all surface bounds are now stale
-        self.layout_version.fetch_add(1, Ordering::Release);
-        self.surface_bounds_cache.lock().unwrap().clear();
-    }
-
-    pub fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
-        self.atlas.clone()
     }
 
     pub fn gpu_specs(&self) -> GpuSpecs {
@@ -5129,29 +4176,6 @@ impl WgpuRenderer {
         self.reconfigure_surface();
         crate::present_mode::set_window_present_mode(mode);
         true
-    }
-
-    pub fn update_transparency(&mut self, transparent: bool) {
-        self.surface_configuration.alpha_mode = if transparent {
-            wgpu::CompositeAlphaMode::PreMultiplied
-        } else {
-            #[cfg(target_os = "linux")]
-            {
-                wgpu::CompositeAlphaMode::Inherit
-            }
-            #[cfg(not(target_os = "linux"))]
-            {
-                wgpu::CompositeAlphaMode::Opaque
-            }
-        };
-        self.reconfigure_surface();
-    }
-
-    pub fn viewport_size(&self) -> geometry::Size<DevicePixels> {
-        geometry::Size {
-            width: DevicePixels(self.surface_configuration.width as i32),
-            height: DevicePixels(self.surface_configuration.height as i32),
-        }
     }
 
     /// On-demand GPU memory snapshot for this renderer (Phase 3 of the
@@ -5374,7 +4398,6 @@ fn flamegraph_kind(kind: SlabKind) -> crate::DrawCallKind {
         SlabKind::PolySprites => crate::DrawCallKind::PolySprites,
     }
 }
-
 
 impl Drop for WgpuRenderer {
     fn drop(&mut self) {

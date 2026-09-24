@@ -15,8 +15,6 @@ pub(crate) struct WgpuAtlas(Mutex<WgpuAtlasState>);
 impl WgpuAtlas {
     pub(crate) fn new(context: Arc<WgpuContext>) -> Self {
         WgpuAtlas(Mutex::new(WgpuAtlasState {
-            atlas_target: None,
-            atlas_target_view: None,
             context,
             storage: WgpuAtlasStorage::default(),
             tiles_by_key: FxHashMap::default(),
@@ -184,8 +182,6 @@ impl PlatformAtlas for WgpuAtlas {
 }
 
 struct WgpuAtlasState {
-    atlas_target: Option<wgpu::Texture>,
-    atlas_target_view: Option<wgpu::TextureView>,
     context: Arc<WgpuContext>,
     storage: WgpuAtlasStorage,
     tiles_by_key: FxHashMap<AtlasKey, AtlasTile>,
