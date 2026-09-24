@@ -52,7 +52,10 @@ pub struct TextSystem {
     font_ids_by_font: RwLock<FxHashMap<Font, Result<FontId>>>,
     font_metrics: RwLock<FxHashMap<FontId, FontMetrics>>,
     raster_bounds: RwLock<FxHashMap<RenderGlyphParams, Bounds<DevicePixels>>>,
-    wrapper_pool: Mutex<FxHashMap<FontIdWithSize, Vec<LineWrapper>>>,
+    // GPUI-3D : en `Box` — un `LineWrapper` pèse ~1,1 Ko (cache de 128 largeurs) et
+    // passait par valeur pool → handle → pool à chaque mesure de texte (~11 % du fil
+    // principal quand toute la fenêtre se reconstruit). Seul le pointeur bouge.
+    wrapper_pool: Mutex<FxHashMap<FontIdWithSize, Vec<Box<LineWrapper>>>>,
     font_runs_pool: Mutex<Vec<Vec<FontRun>>>,
     fallback_font_stack: SmallVec<[Font; 2]>,
 }
@@ -308,14 +311,14 @@ impl TextSystem {
             .entry(FontIdWithSize { font_id, font_size })
             .or_default();
         let wrapper = wrappers.pop().unwrap_or_else(|| {
-            LineWrapper::new(
+            Box::new(LineWrapper::new(
                 font_id,
                 font_size,
                 font.weight,
                 font.style,
                 letter_spacing,
                 self.platform_text_system.clone(),
-            )
+            ))
         });
 
         LineWrapperHandle {
@@ -419,7 +422,7 @@ impl WindowTextSystem {
             "text argument should not contain newlines"
         );
 
-        let mut decoration_runs = SmallVec::<[DecorationRun; 32]>::new();
+        let mut decoration_runs = DecorationRuns::new();
         for run in runs {
             if let Some(last_run) = decoration_runs.last_mut()
                 && last_run.color == run.color.into()
@@ -473,7 +476,7 @@ impl WindowTextSystem {
         let mut process_line = |line_text: SharedString, line_start, line_end| {
             font_runs.clear();
 
-            let mut decoration_runs = SmallVec::<[DecorationRun; 32]>::new();
+            let mut decoration_runs = DecorationRuns::new();
             let mut run_start = line_start;
             while run_start < line_end {
                 let Some(run) = runs.peek_mut() else {
@@ -658,7 +661,7 @@ struct FontIdWithSize {
 
 /// A handle into the text system, which can be used to compute the wrapped layout of text
 pub struct LineWrapperHandle {
-    wrapper: Option<LineWrapper>,
+    wrapper: Option<Box<LineWrapper>>,
     text_system: Arc<TextSystem>,
 }
 
@@ -680,13 +683,13 @@ impl Deref for LineWrapperHandle {
     type Target = LineWrapper;
 
     fn deref(&self) -> &Self::Target {
-        self.wrapper.as_ref().unwrap()
+        self.wrapper.as_deref().unwrap()
     }
 }
 
 impl DerefMut for LineWrapperHandle {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        self.wrapper.as_mut().unwrap()
+        self.wrapper.as_deref_mut().unwrap()
     }
 }
 

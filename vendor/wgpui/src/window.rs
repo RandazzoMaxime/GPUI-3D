@@ -1313,6 +1313,26 @@ pub(crate) fn action_name_hash<T: crate::Action>() -> u64 {
 pub(crate) struct MouseListenerEntry {
     pub(crate) discriminator: u64,
     pub(crate) listener: AnyMouseListener,
+    /// GPUI-3D : translation appliquée à la vue depuis que ce listener a été peint.
+    /// Les closures capturent des bornes absolues : l'évènement et la position souris
+    /// leur sont présentés dans leur repère d'origine (voir `dispatch_mouse_event`).
+    pub(crate) offset: Point<Pixels>,
+}
+
+/// GPUI-3D : copie de `event` décalée de `-offset`, pour un listener rejoué translaté.
+/// `None` pour un type sans position (il est alors passé tel quel).
+fn translated_mouse_event(event: &dyn Any, offset: Point<Pixels>) -> Option<Box<dyn Any>> {
+    macro_rules! shift {
+        ($($ty:ty),*) => {$(
+            if let Some(event) = event.downcast_ref::<$ty>() {
+                let mut event = event.clone();
+                event.position -= offset;
+                return Some(Box::new(event));
+            }
+        )*};
+    }
+    shift!(MouseDownEvent, MouseUpEvent, MouseMoveEvent, ScrollWheelEvent, MouseExitEvent);
+    None
 }
 
 #[derive(Clone)]
@@ -1858,6 +1878,8 @@ pub struct Window {
     /// only because both happened to mean "no cache reuse right now". See
     /// `nested_view_cache_enabled` for the opt-in that lifts it.
     pub(crate) nested_view_cache_suppressed: bool,
+    /// GPUI-3D : emprise des hitboxes insérées par les vues en cache qui se reconstruisent.
+    pub(crate) hitbox_extent_stack: Vec<Option<Bounds<Pixels>>>,
     pub(crate) activation_observers: SubscriberSet<(), AnyObserver>,
     pub(crate) focus: Option<FocusId>,
     focus_enabled: bool,
@@ -2344,6 +2366,7 @@ impl Window {
             last_input_modality: InputModality::Mouse,
             window_invalidation: Invalidation::empty(),
             nested_view_cache_suppressed: false,
+            hitbox_extent_stack: Vec::new(),
             activation_observers: SubscriberSet::new(),
             focus: None,
             focus_enabled: true,
@@ -4152,6 +4175,89 @@ impl Window {
                     prepaint_range: deferred_draw.prepaint_range.clone(),
                     paint_range: deferred_draw.paint_range.clone(),
                 }),
+        );
+    }
+
+    /// GPUI-3D : une vue en cache peut-elle être rejouée à une autre position ? Tout ce
+    /// que ses plages contiennent doit savoir se translater ; le reste (infobulles,
+    /// dessins différés, IME, couches retenues) force une reconstruction.
+    pub(crate) fn translation_supported(
+        &self,
+        prepaint: &Range<PrepaintStateIndex>,
+        paint: &Range<PaintIndex>,
+    ) -> bool {
+        let frame = &self.rendered_frame;
+        !crate::layer::layers_enabled()
+            && prepaint.start.tooltips_index == prepaint.end.tooltips_index
+            && prepaint.start.deferred_draws_index == prepaint.end.deferred_draws_index
+            && paint.start.input_handlers_index == paint.end.input_handlers_index
+            && frame.hitboxes[prepaint.start.hitboxes_index..prepaint.end.hitboxes_index]
+                .iter()
+                .all(|hitbox| hitbox.layer.is_none())
+            && !frame
+                .scene
+                .range_has_layer_slab(paint.start.scene_index..paint.end.scene_index)
+    }
+
+    /// GPUI-3D : [`Self::reuse_prepaint`] d'une vue déplacée de `delta` et recoupée par
+    /// `clip`. Les effets `on_frame` sont rejoués avec leur géométrie translatée.
+    pub(crate) fn reuse_prepaint_translated(
+        &mut self,
+        range: Range<PrepaintStateIndex>,
+        delta: Point<Pixels>,
+        clip: Bounds<Pixels>,
+        cx: &mut App,
+    ) {
+        let hitboxes_start = self.next_frame.hitboxes.len();
+        let effects_start = self.next_frame.effects.len();
+        self.reuse_prepaint(range.clone());
+        for hitbox in &mut self.next_frame.hitboxes[hitboxes_start..] {
+            hitbox.bounds.origin += delta;
+            hitbox.content_mask.bounds.origin += delta;
+            hitbox.content_mask.bounds = hitbox.content_mask.bounds.intersect(&clip);
+        }
+        let effects_range = range.start.effects_index..range.end.effects_index;
+        if effects_range.is_empty() {
+            return;
+        }
+        let effects: Vec<FrameEffect> = self.rendered_frame.effects[effects_range]
+            .iter()
+            .map(|effect| {
+                let mut geometry = effect.geometry.clone();
+                geometry.bounds.origin += delta;
+                geometry.content_mask.bounds.origin += delta;
+                geometry.content_mask.bounds = geometry.content_mask.bounds.intersect(&clip);
+                FrameEffect { callback: effect.callback.clone(), geometry }
+            })
+            .collect();
+        debug_assert_eq!(effects_start, self.next_frame.effects.len());
+        self.next_frame.effects.extend(effects.iter().cloned());
+        let phase = self.invalidator.draw_phase();
+        self.invalidator.set_phase(DrawPhase::Effects);
+        for effect in effects {
+            (effect.callback)(effect.geometry, self, cx);
+        }
+        self.invalidator.set_phase(phase);
+    }
+
+    /// GPUI-3D : [`Self::reuse_paint`] d'une vue déplacée de `delta` et recoupée par `clip`.
+    pub(crate) fn reuse_paint_translated(
+        &mut self,
+        range: &Range<PaintIndex>,
+        delta: Point<Pixels>,
+        clip: Bounds<Pixels>,
+    ) {
+        let listeners_start = self.next_frame.mouse_listeners.len();
+        self.reuse_paint_except_scene(range);
+        for entry in self.next_frame.mouse_listeners[listeners_start..].iter_mut().flatten() {
+            entry.offset += delta;
+        }
+        let scale = self.scale_factor;
+        self.next_frame.scene.replay_translated(
+            range.start.scene_index..range.end.scene_index,
+            &self.rendered_frame.scene,
+            delta.scale(scale),
+            clip.scale(scale),
         );
     }
 
@@ -6500,6 +6606,9 @@ impl Window {
             behavior,
             layer: layer.map(|(key, _, _)| key),
         };
+        if let Some(top) = self.hitbox_extent_stack.last_mut() {
+            *top = Some(top.map_or(bounds, |extent| extent.union(&bounds)));
+        }
         self.next_frame.hitboxes.push(hitbox.clone());
         hitbox
     }
@@ -6815,6 +6924,7 @@ impl Window {
             .mouse_listeners
             .push(Some(MouseListenerEntry {
                 discriminator,
+                offset: Point::default(),
                 listener: Box::new(
                     move |event: &dyn Any,
                           phase: DispatchPhase,
@@ -7128,6 +7238,25 @@ impl Window {
         }
     }
 
+    /// GPUI-3D : appelle un listener, dans son repère d'origine s'il a été rejoué translaté.
+    fn call_mouse_listener(
+        &mut self,
+        entry: &mut MouseListenerEntry,
+        event: &dyn Any,
+        phase: DispatchPhase,
+        cx: &mut App,
+    ) {
+        if entry.offset == Point::default() {
+            (entry.listener)(event, phase, self, cx);
+            return;
+        }
+        let translated = translated_mouse_event(event, entry.offset);
+        let mouse_position = self.mouse_position;
+        self.mouse_position -= entry.offset;
+        (entry.listener)(translated.as_deref().unwrap_or(event), phase, self, cx);
+        self.mouse_position = mouse_position;
+    }
+
     fn dispatch_mouse_event(&mut self, event: &dyn Any, discriminator: u64, cx: &mut App) {
         profiling::scope!("wgpui: dispatch_mouse_event");
         let hit_test = self
@@ -7184,7 +7313,7 @@ impl Window {
         for entry in &mut mouse_listeners {
             if let Some(entry) = entry {
                 if entry.discriminator == discriminator {
-                    (entry.listener)(event, DispatchPhase::Capture, self, cx);
+                    self.call_mouse_listener(entry, event, DispatchPhase::Capture, cx);
                     if !cx.propagate_event {
                         break;
                     }
@@ -7199,7 +7328,7 @@ impl Window {
             for entry in mouse_listeners.iter_mut().rev() {
                 if let Some(entry) = entry {
                     if entry.discriminator == discriminator {
-                        (entry.listener)(event, DispatchPhase::Bubble, self, cx);
+                        self.call_mouse_listener(entry, event, DispatchPhase::Bubble, cx);
                         if !cx.propagate_event {
                             break;
                         }

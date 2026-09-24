@@ -129,6 +129,10 @@ pub struct WgpuContext {
     /// The renderer's own submits deliberately do NOT take a read guard: they run
     /// on the same thread as `configure`, so guarding them would self-deadlock.
     pub(crate) gpu_submit_lock: Arc<parking_lot::RwLock<()>>,
+
+    /// GPUI-3D : dernier renderer à avoir écrit les buffers d'instances partagés. Un
+    /// renderer qui redessine la même scène ne les réécrit que si quelqu'un d'autre l'a fait.
+    pub(crate) instance_upload_owner: std::sync::atomic::AtomicUsize,
 }
 
 impl WgpuContext {
@@ -376,6 +380,7 @@ impl WgpuContext {
                 surface_registry: Arc::new(SurfaceRegistry::with_queue(queue.clone())),
                 desired_maximum_frame_latency: options.desired_maximum_frame_latency,
                 gpu_submit_lock: Arc::new(parking_lot::RwLock::new(())),
+                instance_upload_owner: Default::default(),
             })
         } // end #[cfg(not(target_family = "wasm"))]
     }
@@ -528,6 +533,7 @@ impl WgpuContext {
             surface_registry: Arc::new(SurfaceRegistry::with_queue(queue.clone())),
             desired_maximum_frame_latency,
             gpu_submit_lock: Arc::new(parking_lot::RwLock::new(())),
+            instance_upload_owner: Default::default(),
         })
     }
 }
