@@ -12,10 +12,13 @@ compteur FPS.
 | [`GPUI-WGPU`](GPUI-WGPU/src/main.rs) | wgpu | tous ceux de wgpu : Metal, Vulkan, DX12, GL (`WGPU_BACKEND=…`) |
 | [`GPUI-METAL`](GPUI-METAL/src/metal_cube.rs) | Metal natif (objc2-metal, MSL) | Metal — macOS |
 | [`GPUI-VULKAN`](GPUI-VULKAN/src/main.rs) | Vulkan natif (ash, GLSL → SPIR-V) | Vulkan — Windows, Linux, macOS via MoltenVK |
+| [`GPUI-DX12`](GPUI-DX12/src/dx12_cube.rs) | D3D12 natif (windows-rs, HLSL → DXBC) | D3D12 — Windows |
+| [`GPUI-OPENGL`](GPUI-OPENGL/src/opengl_cube.rs) | OpenGL 4.5 natif (WGL, GLSL) + interop D3D12 pour publier | Windows |
 
-Les moteurs Metal et Vulkan **ne dépendent pas de wgpu** : ils reçoivent de GPUI des
+Les moteurs natifs **ne dépendent pas de wgpu** : ils reçoivent de GPUI des
 poignées natives brutes (`MTLDevice`/`MTLCommandQueue`/`MTLTexture`,
-`VkInstance`/`VkDevice`/`VkQueue`/`VkImage`) et font tout le reste avec l'API.
+`VkInstance`/`VkDevice`/`VkQueue`/`VkImage`, `ID3D12Device`/`ID3D12CommandQueue`/`ID3D12Resource`)
+et font tout le reste avec l'API.
 
 ## Lancer
 
@@ -23,7 +26,17 @@ poignées natives brutes (`MTLDevice`/`MTLCommandQueue`/`MTLTexture`,
 cargo run -p gpui-wgpu
 cargo run -p gpui-metal
 cargo run -p gpui-vulkan
+cargo run -p gpui-dx12
+cargo run -p gpui-opengl
 ```
+
+`GPUI-OPENGL` exige un pilote exposant `GL_EXT_memory_object_win32` et
+`GL_EXT_semaphore_win32`, et un contexte GL sur le même GPU que le device D3D12 de GPUI
+(LUID vérifié) : sinon, échec explicite.
+
+`GPUI3D_TIME=1.3` fige la scène (même image pour tous les moteurs, pour les comparer
+pixel à pixel). Sur un poste iGPU + dGPU, le GPU discret est choisi à backend égal ;
+l'adaptateur retenu s'affiche au lancement.
 
 `WGPU_BACKEND=vulkan cargo run -p gpui-wgpu` force un backend wgpu (par défaut :
 Metal sur macOS). Le bandeau affiche le moteur et l'API réelle du device.
@@ -46,6 +59,8 @@ shell/            chrome GPUI + caméra + fil de rendu, commun aux trois moteurs
 GPUI-WGPU/        moteur wgpu (WGSL)
 GPUI-METAL/       moteur Metal natif (MSL)
 GPUI-VULKAN/      moteur Vulkan natif (GLSL compilé en SPIR-V par build.rs)
+GPUI-DX12/        moteur D3D12 natif (HLSL compilé par d3dcompiler_47 au démarrage)
+GPUI-OPENGL/      moteur OpenGL natif (WGL, bindings générés par build.rs) + publication D3D12
 vendor/wgpui      fork GPUI (gpui-ce / WGPUI) + patchs « GPUI-3D »
 vendor/priority-threadpool   copie corrigée (timers GPUI)
 ```
@@ -78,6 +93,16 @@ La recette :
   se fait sous `native_queue_lock()` (le compositeur le prend aussi). Le tampon
   arrive et repart en `SHADER_READ_ONLY_OPTIMAL` ; les dépendances de subpass
   d'entrée/sortie portent la synchronisation avec le compositeur.
+- **D3D12** : même `ID3D12CommandQueue` que le compositeur ⇒ ordre garanti ; une queue
+  D3D12 est thread-safe, pas de verrou. Le tampon arrive et repart en
+  `PIXEL_SHADER_RESOURCE | NON_PIXEL_SHADER_RESOURCE` (l'état `RESOURCE` de wgpu).
+- **OpenGL** : GPUI ne tourne pas sur wgpu-GL (pas de binding arrays), le moteur GL
+  s'appuie donc sur le device D3D12. Il rend dans son FBO, relit en BGRA dans un tampon
+  D3D12 partagé importé dans GL (`glImportMemoryWin32HandleEXT`), puis la queue D3D12
+  le copie dans le tampon arrière. Une fence D3D12 partagée, importée en sémaphore GL,
+  ordonne les deux côtés sur GPU. `glClipControl(UPPER_LEFT, ZERO_TO_ONE)` donne la
+  convention clip de wgpu/D3D. L'import exige un contexte **core** : un contexte
+  hérité (compatibilité) le refuse (`GL_OUT_OF_MEMORY`).
 - Les tampons sont initialisés à leur création (sinon wgpu les jugerait vierges et
   les effacerait avant de les échantillonner).
 - `adapter_selector` est honoré aussi sur macOS (choisir Metal ou Vulkan/MoltenVK) ;

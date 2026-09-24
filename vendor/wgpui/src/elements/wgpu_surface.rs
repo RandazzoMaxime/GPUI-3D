@@ -493,7 +493,7 @@ impl Styled for WgpuSurface {
 }
 
 // ---------------------------------------------------------------------------
-// GPUI-3D : interop native. Un moteur 3D Metal ou Vulkan rend dans les tampons de la
+// GPUI-3D : interop native. Un moteur 3D Metal, Vulkan ou D3D12 rend dans les tampons de la
 // surface avec SA propre API, sur le device de l'UI (zéro copie). wgpu n'apparaît
 // qu'ici, pour lire les poignées ; le moteur n'en dépend pas.
 // ---------------------------------------------------------------------------
@@ -522,10 +522,19 @@ pub enum NativeDevice {
         /// Famille de `queue`.
         queue_family_index: u32,
     },
+    /// `ID3D12Device*` et `ID3D12CommandQueue*` du compositeur (même queue ⇒ ordre
+    /// garanti ; une queue D3D12 est thread-safe, aucun verrou requis). Pointeurs
+    /// empruntés : `AddRef` pour les garder.
+    Dx12 {
+        /// `ID3D12Device*`.
+        device: *mut std::ffi::c_void,
+        /// `ID3D12CommandQueue*`.
+        queue: *mut std::ffi::c_void,
+    },
 }
 
-// SAFETY: poignées opaques ; `id<MTLDevice>`/`id<MTLCommandQueue>` sont thread-safe,
-// `VkQueue` est protégée par `native_queue_lock`.
+// SAFETY: poignées opaques ; `id<MTLDevice>`/`id<MTLCommandQueue>` et les objets D3D12
+// sont thread-safe, `VkQueue` est protégée par `native_queue_lock`.
 unsafe impl Send for NativeDevice {}
 unsafe impl Sync for NativeDevice {}
 
@@ -541,7 +550,8 @@ pub struct NativeBackBuffer {
 }
 
 /// Voir [`NativeBackBuffer`]. Contrat Vulkan : l'image arrive et doit repartir en
-/// `SHADER_READ_ONLY_OPTIMAL` (l'état `RESOURCE` que wgpu lui connaît).
+/// `SHADER_READ_ONLY_OPTIMAL` (l'état `RESOURCE` que wgpu lui connaît). Contrat D3D12 :
+/// même chose en `PIXEL_SHADER_RESOURCE | NON_PIXEL_SHADER_RESOURCE`.
 #[derive(Clone, Copy, Debug)]
 pub enum NativeTexture {
     /// `id<MTLTexture>`.
@@ -553,12 +563,14 @@ pub enum NativeTexture {
         /// `VkImageView`.
         view: u64,
     },
+    /// `ID3D12Resource*` emprunté.
+    Dx12(*mut std::ffi::c_void),
 }
 
 unsafe impl Send for NativeBackBuffer {}
 
 impl WgpuSurfaceHandle {
-    /// Poignées natives du device de l'UI (`None` : backend ni Metal ni Vulkan).
+    /// Poignées natives du device de l'UI (`None` : backend GL ou WebGPU).
     pub fn native_device(&self) -> Option<NativeDevice> {
         #[cfg(target_vendor = "apple")]
         if let Some(device) = unsafe { self.inner.device.as_hal::<wgpu::hal::api::Metal>() } {
@@ -566,6 +578,14 @@ impl WgpuSurfaceHandle {
             return Some(NativeDevice::Metal {
                 device: &**device.raw_device() as *const _ as *mut std::ffi::c_void,
                 queue: queue.as_raw() as *const _ as *mut std::ffi::c_void,
+            });
+        }
+        #[cfg(windows)]
+        if let Some(device) = unsafe { self.inner.device.as_hal::<wgpu::hal::api::Dx12>() } {
+            let queue = unsafe { self.inner.queue.as_hal::<wgpu::hal::api::Dx12>() }?;
+            return Some(NativeDevice::Dx12 {
+                device: windows_core::Interface::as_raw(device.raw_device()),
+                queue: windows_core::Interface::as_raw(queue.as_raw()),
             });
         }
         #[cfg(not(target_family = "wasm"))]
@@ -598,6 +618,17 @@ impl WgpuSurfaceHandle {
                 _view: view,
             });
         }
+        #[cfg(windows)]
+        if let Some(raw) = unsafe { texture.as_hal::<wgpu::hal::api::Dx12>() } {
+            let resource = windows_core::Interface::as_raw(unsafe { raw.raw_resource() });
+            drop(raw);
+            return Some(NativeBackBuffer {
+                texture: NativeTexture::Dx12(resource),
+                size,
+                _texture: texture,
+                _view: view,
+            });
+        }
         #[cfg(not(target_family = "wasm"))]
         {
             use ash::vk::Handle as _;
@@ -615,7 +646,7 @@ impl WgpuSurfaceHandle {
     }
 
     /// Verrou de la queue partagée, à tenir autour de tout `vkQueueSubmit` natif
-    /// (le compositeur le prend autour de ses `submit`/`present`). Inutile en Metal.
+    /// (le compositeur le prend autour de ses `submit`/`present`). Inutile en Metal et D3D12.
     pub fn native_queue_lock(&self) -> parking_lot::MutexGuard<'_, ()> {
         self.inner.registry.queue_lock()
     }

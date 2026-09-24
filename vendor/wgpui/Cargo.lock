@@ -1987,6 +1987,7 @@ dependencies = [
  "accesskit",
  "anyhow",
  "arboard",
+ "ash",
  "async-task",
  "backtrace",
  "bincode",
@@ -2064,6 +2065,7 @@ dependencies = [
  "web-sys",
  "web-time",
  "wgpu",
+ "windows-core",
  "winit",
  "x11-dl",
 ]

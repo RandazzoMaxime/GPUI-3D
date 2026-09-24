@@ -1,0 +1,12 @@
+[package]
+name = "gpui-dx12"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gpui3d-shell.workspace = true
+bytemuck.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+# D3D12 natif. Aucune dépendance wgpu : GPUI ne fournit que des poignées brutes.
+windows = { workspace = true }

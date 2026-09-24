@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["shell", "GPUI-WGPU", "GPUI-METAL", "GPUI-VULKAN"]
+members = ["shell", "GPUI-WGPU", "GPUI-METAL", "GPUI-VULKAN", "GPUI-DX12", "GPUI-OPENGL"]
 exclude = ["vendor/wgpui", "vendor/priority-threadpool"]
 
 [workspace.dependencies]
@@ -10,6 +10,19 @@ wgpu = { version = "=30.0.0", default-features = false, features = ["std", "meta
 glam = "0.30"
 bytemuck = { version = "1", features = ["derive"] }
 gpui3d-shell = { path = "shell" }
+# D3D12 natif (GPUI-DX12, GPUI-OPENGL) + WGL (GPUI-OPENGL) : même version que wgpu-hal 30.
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D_Fxc",
+    "Win32_Graphics_Direct3D12",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_OpenGL",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 # Copie corrigée : course fetch_add/push (jobs orphelins ⇒ timers GPUI perdus).
 [patch."https://github.com/tristanpoland/priority-threadpool"]

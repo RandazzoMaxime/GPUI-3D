@@ -1,0 +1,16 @@
+[package]
+name = "gpui-opengl"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gpui3d-shell.workspace = true
+bytemuck.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+# OpenGL natif (WGL) + D3D12 natif pour publier. Aucune dépendance wgpu.
+windows = { workspace = true }
+
+[build-dependencies]
+# Bindings GL 4.5 + extensions d'interop D3D12, générés depuis le registre Khronos.
+gl_generator = "0.14"

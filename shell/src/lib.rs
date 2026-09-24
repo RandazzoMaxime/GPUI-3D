@@ -1,4 +1,4 @@
-//! Chrome GPUI + fil de rendu 3D, partagés par GPUI-WGPU et GPUI-METAL.
+//! Chrome GPUI + fil de rendu 3D, partagés par tous les moteurs (wgpu, Metal, Vulkan, D3D12, OpenGL).
 //! Le moteur rend sur
 //! son propre fil dans une `WgpuSurface` triple-buffer du device de l'UI, publie par
 //! `present_synced_silent` + `request_window_redraw` ⇒ la fenêtre recompose la scène
@@ -94,11 +94,22 @@ pub const CUBE_INDICES: [u16; 36] = [
 ];
 
 /// Ouvre la fenêtre GPUI-3D et démarre le moteur `R` sur son fil. `backends` restreint
-/// l'adaptateur du device GPUI — donc celui du moteur, c'est le même device.
+/// l'adaptateur du device GPUI — donc celui du moteur, c'est le même device. À backend
+/// égal, le GPU discret passe devant l'iGPU (poste iGPU + dGPU).
 pub fn run<R: Renderer>(label: &'static str, backends: Backends) {
     let adapter_selector: Option<gpui::AdapterSelector> = (backends != Backends::all()).then(|| {
-        Arc::new(move |infos: &[wgpu::AdapterInfo]| infos.iter().position(|i| backends.contains(i.backend.into())))
-            as _
+        Arc::new(move |infos: &[wgpu::AdapterInfo]| {
+            let pick = infos
+                .iter()
+                .enumerate()
+                .filter(|(_, i)| backends.contains(i.backend.into()))
+                .min_by_key(|(_, i)| i.device_type != wgpu::DeviceType::DiscreteGpu)
+                .map(|(index, _)| index);
+            // Sans ceci le fork prendrait le premier adaptateur venu : un autre backend, en silence.
+            let index = pick.unwrap_or_else(|| panic!("aucun adaptateur {backends:?} apte à faire tourner GPUI"));
+            eprintln!("[gpui-3d] adaptateur : {} ({:?})", infos[index].name, infos[index].backend);
+            Some(index)
+        }) as _
     });
     Application::with_wgpu_options(gpui::WgpuOptions { adapter_selector, ..Default::default() }).run(move |cx: &mut App| {
         // Police embarquée : même rendu sur toutes les plateformes (« SF Pro » n'est pas une famille nommée sur macOS).
@@ -132,7 +143,8 @@ pub fn run<R: Renderer>(label: &'static str, backends: Backends) {
             let api = match surface.native_device() {
                 Some(NativeDevice::Metal { .. }) => "Metal",
                 Some(NativeDevice::Vulkan { .. }) => "Vulkan",
-                None => "autre (DX12 / GL)",
+                Some(NativeDevice::Dx12 { .. }) => "D3D12",
+                None => "autre (GL)",
             };
             cx.new(|_| Shell { backend: label, api, surface, camera, drag_from: Arc::new(Mutex::new(None)), fps })
         })
@@ -154,10 +166,12 @@ fn spawn_render_thread<R: Renderer>(
         .name("render-3d".into())
         .spawn(move || {
             let mut renderer = R::new(&surface);
+            // `GPUI3D_TIME=1.3` fige la scène : comparaison pixel à pixel entre moteurs.
+            let frozen: Option<f32> = std::env::var("GPUI3D_TIME").ok().and_then(|t| t.parse().ok());
             let start = Instant::now();
             let mut deadline = start;
             loop {
-                let scene = Scene { camera: *camera.lock().unwrap(), time: start.elapsed().as_secs_f32() };
+                let scene = Scene { camera: *camera.lock().unwrap(), time: frozen.unwrap_or_else(|| start.elapsed().as_secs_f32()) };
                 let guard = surface.submit_guard();
                 if renderer.render(&surface, &scene) {
                     frames.fetch_add(1, Ordering::Relaxed);
