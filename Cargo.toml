@@ -1,0 +1,41 @@
+[workspace]
+resolver = "2"
+members = ["shell", "GPUI-WGPU", "GPUI-METAL", "GPUI-VULKAN"]
+exclude = ["vendor/wgpui", "vendor/priority-threadpool"]
+
+[workspace.dependencies]
+gpui = { package = "gpui-ce", path = "vendor/wgpui" }
+# Même version que le fork : un seul wgpu, donc un seul Device partagé UI / 3D. Tous ses backends.
+wgpu = { version = "=30.0.0", default-features = false, features = ["std", "metal", "vulkan", "vulkan-portability", "dx12", "gles", "wgsl"] }
+glam = "0.30"
+bytemuck = { version = "1", features = ["derive"] }
+gpui3d-shell = { path = "shell" }
+
+# Copie du flight planner : course fetch_add/push corrigée (jobs orphelins ⇒ timers GPUI perdus).
+[patch."https://github.com/tristanpoland/priority-threadpool"]
+priority-threadpool = { path = "vendor/priority-threadpool/crates/priority-threadpool" }
+
+[profile.dev]
+debug = "line-tables-only"
+
+# Le chrome et le GPU doivent tourner optimisés même en debug (mesuré sur le flight planner).
+[profile.dev.package.gpui-ce]
+opt-level = 3
+[profile.dev.package.wgpu]
+opt-level = 3
+[profile.dev.package.wgpu-core]
+opt-level = 3
+[profile.dev.package.wgpu-hal]
+opt-level = 3
+[profile.dev.package.naga]
+opt-level = 3
+[profile.dev.package.taffy]
+opt-level = 3
+[profile.dev.package.cosmic-text]
+opt-level = 3
+[profile.dev.package.swash]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
