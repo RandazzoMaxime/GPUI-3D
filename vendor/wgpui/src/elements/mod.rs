@@ -3,6 +3,7 @@ mod animation;
 mod canvas;
 mod deferred;
 mod div;
+mod gpu_surface;
 mod h_list;
 mod image_cache;
 mod img;
@@ -14,14 +15,13 @@ mod svg;
 mod text;
 mod uniform_list;
 mod virtual_list;
-#[cfg(feature = "wgpu")]
-mod wgpu_surface;
 
 pub use anchored::*;
 pub use animation::*;
 pub use canvas::*;
 pub use deferred::*;
 pub use div::*;
+pub use gpu_surface::*;
 pub use h_list::*;
 pub use image_cache::*;
 pub use img::*;
@@ -32,5 +32,3 @@ pub use svg::*;
 pub use text::*;
 pub use uniform_list::*;
 pub use virtual_list::*;
-#[cfg(feature = "wgpu")]
-pub use wgpu_surface::*;

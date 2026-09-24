@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-gpui3d-shell.workspace = true
+gpui3d-shell = { workspace = true, features = ["wgpu"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Metal natif (objc2). Aucune dépendance wgpu : GPUI ne fournit que des poignées brutes.

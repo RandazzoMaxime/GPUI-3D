@@ -1,8 +1,11 @@
 //! Chrome GPUI + fil de rendu 3D, partagés par tous les moteurs (wgpu, Metal, Vulkan, D3D12, OpenGL).
 //! Le moteur rend sur
-//! son propre fil dans une `WgpuSurface` triple-buffer du device de l'UI, publie par
-//! `present_synced_silent` + `request_window_redraw` ⇒ la fenêtre recompose la scène
-//! en cache, le chrome n'est jamais redessiné pour une trame 3D.
+//! son propre fil dans une surface triple-buffer du device de l'UI, publie par
+//! `swap_buffers` + `request_window_redraw` ⇒ la fenêtre recompose la scène en
+//! cache, le chrome n'est jamais redessiné pour une trame 3D.
+//!
+//! Le backend de l'UI se choisit par [`Ui`] : wgpu (feature `wgpu`) ou natif (feature
+//! `vulkan`, sans wgpu dans le binaire).
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -11,23 +14,70 @@ use std::time::{Duration, Instant};
 use glam::{Mat4, Vec3};
 use gpui::{
     App, Application, Bounds, Context, FontWeight, MouseButton, MouseDownEvent, MouseMoveEvent,
-    Point, Render, ScrollWheelEvent, TitlebarOptions, WgpuSurfaceHandle, Window, WindowBounds,
-    WindowOptions, div, prelude::*, px, rgb, size, wgpu_surface,
+    Point, Render, RendererBackend, ScrollWheelEvent, SurfaceFormat, TitlebarOptions, Window,
+    WindowBounds, WindowOptions, div, gpu_surface, prelude::*, px, rgb, size,
 };
 
-pub use gpui::{NativeBackBuffer, NativeDevice, NativeTexture, WgpuSurfaceHandle as Surface};
+pub use gpui::{NativeBackBuffer, NativeDevice, NativeTexture, SurfaceHandle as Surface};
+#[cfg(feature = "wgpu")]
+pub use gpui::WgpuSurfaceHandle;
+#[cfg(feature = "wgpu")]
 pub use wgpu::Backends;
 
 /// sRGB (Metal : `BGRA8Unorm_sRGB`, Vulkan : `B8G8R8A8_SRGB`).
-pub const SURFACE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8UnormSrgb;
+pub const SURFACE_FORMAT: SurfaceFormat = SurfaceFormat::Bgra8UnormSrgb;
+
+/// Backend du renderer de l'UI, donc du device partagé avec le moteur 3D.
+pub enum Ui {
+    /// wgpu, restreint à ces backends (le GPU discret passe devant l'iGPU).
+    #[cfg(feature = "wgpu")]
+    Wgpu(Backends),
+    /// Vulkan natif, sans wgpu.
+    #[cfg(feature = "vulkan")]
+    Vulkan,
+}
+
+impl Ui {
+    fn renderer_backend(self) -> RendererBackend {
+        match self {
+            #[cfg(feature = "wgpu")]
+            Self::Wgpu(backends) => RendererBackend::Wgpu(gpui::WgpuOptions {
+                adapter_selector: wgpu_adapter_selector(backends),
+                ..Default::default()
+            }),
+            #[cfg(feature = "vulkan")]
+            Self::Vulkan => RendererBackend::Vulkan,
+        }
+    }
+}
+
+/// Restreint l'adaptateur du device GPUI — donc celui du moteur, c'est le même device.
+/// À backend égal, le GPU discret passe devant l'iGPU (poste iGPU + dGPU).
+#[cfg(feature = "wgpu")]
+fn wgpu_adapter_selector(backends: Backends) -> Option<gpui::AdapterSelector> {
+    (backends != Backends::all()).then(|| {
+        Arc::new(move |infos: &[wgpu::AdapterInfo]| {
+            let pick = infos
+                .iter()
+                .enumerate()
+                .filter(|(_, i)| backends.contains(i.backend.into()))
+                .min_by_key(|(_, i)| i.device_type != wgpu::DeviceType::DiscreteGpu)
+                .map(|(index, _)| index);
+            // Sans ceci le fork prendrait le premier adaptateur venu : un autre backend, en silence.
+            let index = pick.unwrap_or_else(|| panic!("aucun adaptateur {backends:?} apte à faire tourner GPUI"));
+            eprintln!("[gpui-3d] adaptateur : {} ({:?})", infos[index].name, infos[index].backend);
+            Some(index)
+        }) as _
+    })
+}
 pub const CLEAR_COLOR: [f64; 4] = [0.96, 0.96, 0.97, 1.0];
 
 /// Moteur 3D branché sur la surface, appelé sur le fil de rendu (`submit_guard` tenu).
 /// Il publie lui-même sa trame : `present_synced_silent` (wgpu) ou `swap_buffers` (natif).
 pub trait Renderer: 'static {
-    fn new(surface: &WgpuSurfaceHandle) -> Self;
+    fn new(surface: &Surface) -> Self;
     /// `true` si une trame a été publiée.
-    fn render(&mut self, surface: &WgpuSurfaceHandle, scene: &Scene) -> bool;
+    fn render(&mut self, surface: &Surface, scene: &Scene) -> bool;
 }
 
 #[derive(Clone, Copy)]
@@ -93,25 +143,9 @@ pub const CUBE_INDICES: [u16; 36] = [
     12,13,14, 12,14,15,  16,17,18, 16,18,19,  20,21,22, 20,22,23,
 ];
 
-/// Ouvre la fenêtre GPUI-3D et démarre le moteur `R` sur son fil. `backends` restreint
-/// l'adaptateur du device GPUI — donc celui du moteur, c'est le même device. À backend
-/// égal, le GPU discret passe devant l'iGPU (poste iGPU + dGPU).
-pub fn run<R: Renderer>(label: &'static str, backends: Backends) {
-    let adapter_selector: Option<gpui::AdapterSelector> = (backends != Backends::all()).then(|| {
-        Arc::new(move |infos: &[wgpu::AdapterInfo]| {
-            let pick = infos
-                .iter()
-                .enumerate()
-                .filter(|(_, i)| backends.contains(i.backend.into()))
-                .min_by_key(|(_, i)| i.device_type != wgpu::DeviceType::DiscreteGpu)
-                .map(|(index, _)| index);
-            // Sans ceci le fork prendrait le premier adaptateur venu : un autre backend, en silence.
-            let index = pick.unwrap_or_else(|| panic!("aucun adaptateur {backends:?} apte à faire tourner GPUI"));
-            eprintln!("[gpui-3d] adaptateur : {} ({:?})", infos[index].name, infos[index].backend);
-            Some(index)
-        }) as _
-    });
-    Application::with_wgpu_options(gpui::WgpuOptions { adapter_selector, ..Default::default() }).run(move |cx: &mut App| {
+/// Ouvre la fenêtre GPUI-3D, l'UI rendue par `ui`, et démarre le moteur `R` sur son fil.
+pub fn run<R: Renderer>(label: &'static str, ui: Ui) {
+    Application::with_renderer(ui.renderer_backend()).run(move |cx: &mut App| {
         // Police embarquée : même rendu sur toutes les plateformes (« SF Pro » n'est pas une famille nommée sur macOS).
         cx.text_system()
             .add_fonts(vec![
@@ -130,8 +164,8 @@ pub fn run<R: Renderer>(label: &'static str, backends: Backends) {
             let vp = window.viewport_size();
             let (w, h) = ((f32::from(vp.width) * scale) as u32, (f32::from(vp.height) * scale) as u32);
             let surface = window
-                .create_wgpu_surface(w.max(1), h.max(1), SURFACE_FORMAT)
-                .expect("WgpuSurface indisponible sur cette plateforme");
+                .create_surface(w.max(1), h.max(1), SURFACE_FORMAT)
+                .expect("surface 3D indisponible sur cette plateforme");
             let hz = window
                 .display(cx)
                 .and_then(|d| d.refresh_rate_millihertz())
@@ -155,7 +189,7 @@ pub fn run<R: Renderer>(label: &'static str, backends: Backends) {
 }
 
 fn spawn_render_thread<R: Renderer>(
-    surface: WgpuSurfaceHandle,
+    surface: Surface,
     camera: Arc<Mutex<OrbitCamera>>,
     frames: Arc<AtomicU64>,
     hz: f64,
@@ -190,7 +224,7 @@ fn spawn_render_thread<R: Renderer>(
 struct Shell {
     backend: &'static str,
     api: &'static str,
-    surface: WgpuSurfaceHandle,
+    surface: Surface,
     camera: Arc<Mutex<OrbitCamera>>,
     drag_from: Arc<Mutex<Option<Point<gpui::Pixels>>>>,
     fps: gpui::Entity<FpsLabel>,
@@ -257,7 +291,7 @@ impl Render for Shell {
                             .on_scroll_wheel(move |ev: &ScrollWheelEvent, _, _| {
                                 zoom.lock().unwrap().zoom(f32::from(ev.delta.pixel_delta(px(16.)).y));
                             })
-                            .child(wgpu_surface(self.surface.clone()).absolute().inset_0()),
+                            .child(gpu_surface(self.surface.clone()).absolute().inset_0()),
                     ),
             )
             .child(

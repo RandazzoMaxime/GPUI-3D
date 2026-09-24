@@ -484,6 +484,17 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
 
     fn update_ime_position(&self, _bounds: Bounds<Pixels>);
 
+    /// Surface triple-buffer pour un rendu externe, sur le device de l'UI.
+    /// `None` sans renderer GPU.
+    fn create_surface(
+        &self,
+        _width: u32,
+        _height: u32,
+        _format: crate::SurfaceFormat,
+    ) -> Option<crate::SurfaceHandle> {
+        None
+    }
+
     /// Create a double-buffered WGPU surface handle for external rendering.
     /// Returns `None` on platforms that don't use the WGPU renderer.
     #[cfg(feature = "wgpu")]

@@ -3,7 +3,12 @@ name = "gpui3d-shell"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+# Backend du renderer de l'UI : wgpu (abstraction multi-API) ou Vulkan natif.
+wgpu = ["gpui/wgpu", "dep:wgpu"]
+vulkan = ["gpui/vulkan"]
+
 [dependencies]
 gpui.workspace = true
-wgpu.workspace = true
+wgpu = { workspace = true, optional = true }
 glam.workspace = true

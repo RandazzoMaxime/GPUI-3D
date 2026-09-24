@@ -4,12 +4,13 @@ members = ["shell", "GPUI-WGPU", "GPUI-METAL", "GPUI-VULKAN", "GPUI-DX12", "GPUI
 exclude = ["vendor/wgpui", "vendor/priority-threadpool"]
 
 [workspace.dependencies]
-gpui = { package = "gpui-ce", path = "vendor/wgpui" }
+# Sans features : chaque variante choisit son backend d'UI via le shell (`wgpu` ou natif).
+gpui = { package = "gpui-ce", path = "vendor/wgpui", default-features = false, features = ["font-kit"] }
 # Même version que le fork : un seul wgpu, donc un seul Device partagé UI / 3D. Tous ses backends.
 wgpu = { version = "=30.0.0", default-features = false, features = ["std", "metal", "vulkan", "vulkan-portability", "dx12", "gles", "wgsl"] }
 glam = "0.30"
 bytemuck = { version = "1", features = ["derive"] }
-gpui3d-shell = { path = "shell" }
+gpui3d-shell = { path = "shell", default-features = false }
 # D3D12 natif (GPUI-DX12, GPUI-OPENGL) + WGL (GPUI-OPENGL) : même version que wgpu-hal 30.
 windows = { version = "0.62", features = [
     "Win32_Foundation",

@@ -1,10 +1,11 @@
 //! Moteur 3D wgpu sur le `wgpu::Device` de GPUI : rendu direct dans le back buffer
 //! de la `WgpuSurface`, zéro copie.
 
-use gpui3d_shell::{Backends, CLEAR_COLOR, CUBE_INDICES, CUBE_VERTICES, Renderer, Scene, Surface};
+use gpui3d_shell::{Backends, CLEAR_COLOR, CUBE_INDICES, CUBE_VERTICES, Renderer, Scene, Surface, Ui, WgpuSurfaceHandle};
 use wgpu::util::DeviceExt;
 
 struct WgpuCube {
+    surface: WgpuSurfaceHandle,
     pipeline: wgpu::RenderPipeline,
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
@@ -15,6 +16,7 @@ struct WgpuCube {
 
 impl Renderer for WgpuCube {
     fn new(surface: &Surface) -> Self {
+        let surface = surface.as_wgpu().expect("l'UI de GPUI ne tourne pas sur wgpu");
         let device = surface.device();
         let shader = device.create_shader_module(wgpu::include_wgsl!("cube.wgsl"));
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
@@ -87,10 +89,11 @@ impl Renderer for WgpuCube {
             contents: bytemuck::cast_slice(&CUBE_INDICES),
             usage: wgpu::BufferUsages::INDEX,
         });
-        Self { pipeline, vertices, indices, uniforms, bind_group, depth: None }
+        Self { surface, pipeline, vertices, indices, uniforms, bind_group, depth: None }
     }
 
-    fn render(&mut self, surface: &Surface, scene: &Scene) -> bool {
+    fn render(&mut self, _surface: &Surface, scene: &Scene) -> bool {
+        let surface = self.surface.clone();
         let Some((view, (w, h))) = surface.back_view_with_size() else { return false };
         let device = surface.device();
         if self.depth.as_ref().map(|d| d.1) != Some((w, h)) {
@@ -147,5 +150,5 @@ impl Renderer for WgpuCube {
 fn main() {
     // Tous les backends wgpu ; `WGPU_BACKEND=vulkan|metal|dx12|gl` en force un (vide = tous).
     let backends = Backends::from_env().filter(|b| !b.is_empty()).unwrap_or(Backends::all());
-    gpui3d_shell::run::<WgpuCube>("wgpu", backends);
+    gpui3d_shell::run::<WgpuCube>("wgpu", Ui::Wgpu(backends));
 }

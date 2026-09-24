@@ -46,6 +46,72 @@ fn stale_to_carry<T>(already_held: Option<T>, current_display: T) -> Option<T> {
 pub use crate::scene::SurfaceId;
 
 use super::hal::{Gpu, TextureUsage};
+use crate::{NativeBackBuffer, NativeDevice};
+
+/// GPUI-3D : le registre vu du handle public de surface, quel que soit le backend.
+pub(crate) trait SurfaceStore: Send + Sync {
+    fn swap_rendering_ready(&self, id: SurfaceId);
+    #[cfg(feature = "wgpu")]
+    fn set_redraw_pending(&self, id: SurfaceId) -> bool;
+    fn has_unconsumed_frame(&self, id: SurfaceId) -> bool;
+    fn size(&self, id: SurfaceId) -> Option<(u32, u32)>;
+    fn has_pending_resize(&self, id: SurfaceId) -> bool;
+    fn cancel_pending_resize(&self, id: SurfaceId);
+    fn resize(&self, id: SurfaceId, width: u32, height: u32) -> bool;
+    fn remove(&self, id: SurfaceId);
+    fn queue_lock(&self) -> parking_lot::MutexGuard<'_, ()>;
+    fn native_device(&self) -> Option<NativeDevice>;
+    fn native_back_buffer(&self, id: SurfaceId) -> Option<NativeBackBuffer>;
+}
+
+impl<G: Gpu> SurfaceStore for SurfaceRegistry<G> {
+    fn swap_rendering_ready(&self, id: SurfaceId) {
+        SurfaceRegistry::swap_rendering_ready(self, id)
+    }
+
+    #[cfg(feature = "wgpu")]
+    fn set_redraw_pending(&self, id: SurfaceId) -> bool {
+        SurfaceRegistry::set_redraw_pending(self, id)
+    }
+
+    fn has_unconsumed_frame(&self, id: SurfaceId) -> bool {
+        SurfaceRegistry::has_unconsumed_frame(self, id)
+    }
+
+    fn size(&self, id: SurfaceId) -> Option<(u32, u32)> {
+        SurfaceRegistry::size(self, id)
+    }
+
+    fn has_pending_resize(&self, id: SurfaceId) -> bool {
+        SurfaceRegistry::has_pending_resize(self, id)
+    }
+
+    fn cancel_pending_resize(&self, id: SurfaceId) {
+        SurfaceRegistry::cancel_pending_resize(self, id)
+    }
+
+    fn resize(&self, id: SurfaceId, width: u32, height: u32) -> bool {
+        SurfaceRegistry::resize(self, id, width, height)
+    }
+
+    fn remove(&self, id: SurfaceId) {
+        SurfaceRegistry::remove(self, id)
+    }
+
+    fn queue_lock(&self) -> parking_lot::MutexGuard<'_, ()> {
+        self.gpu.queue_lock()
+    }
+
+    fn native_device(&self) -> Option<NativeDevice> {
+        self.gpu.native_device()
+    }
+
+    fn native_back_buffer(&self, id: SurfaceId) -> Option<NativeBackBuffer> {
+        let (texture, view, size) = self.back_buffer(id)?;
+        let native = G::native_texture(&texture, &view)?;
+        Some(NativeBackBuffer::new(native, size, Box::new((texture, view))))
+    }
+}
 
 /// Triple-buffered surface for lock-free rendering.
 ///
@@ -117,9 +183,6 @@ pub struct SurfaceRegistry<G: Gpu> {
     surfaces: Mutex<HashMap<SurfaceId, TripleBuffer<G>>>,
     next_id: AtomicU64,
     seen_generations: AtomicU64,
-    /// GPUI-3D : `VkQueue` exige une synchronisation externe ; tout `submit`/`present`
-    /// wgpu du compositeur et tout `vkQueueSubmit` d'un moteur natif le prennent.
-    queue_lock: parking_lot::Mutex<()>,
 }
 
 impl<G: Gpu> SurfaceRegistry<G> {
@@ -131,13 +194,7 @@ impl<G: Gpu> SurfaceRegistry<G> {
             surfaces: Mutex::new(HashMap::new()),
             next_id: AtomicU64::new(1),
             seen_generations: AtomicU64::new(0),
-            queue_lock: parking_lot::Mutex::new(()),
         }
-    }
-
-    /// GPUI-3D : verrou de la queue partagée (voir le champ `queue_lock`).
-    pub fn queue_lock(&self) -> parking_lot::MutexGuard<'_, ()> {
-        self.queue_lock.lock()
     }
 
     /// Create a new triple-buffered surface. Returns its `SurfaceId`.
@@ -188,6 +245,7 @@ impl<G: Gpu> SurfaceRegistry<G> {
     }
 
     /// Get the rendering buffer's `TextureView` (what external code renders into).
+    #[cfg_attr(not(feature = "wgpu"), allow(dead_code))]
     pub fn back_view(&self, id: SurfaceId) -> Option<G::TextureView> {
         let surfaces = self.surfaces.lock().unwrap();
         surfaces.get(&id).map(|tb| {
@@ -199,6 +257,7 @@ impl<G: Gpu> SurfaceRegistry<G> {
     /// Compat (voir src/compat.rs) : la `Texture` du buffer de
     /// rendu, quand le rendu externe a besoin de plus qu'une vue (copies,
     /// dimensions, format).
+    #[cfg_attr(not(feature = "wgpu"), allow(dead_code))]
     pub fn back_texture(&self, id: SurfaceId) -> Option<G::Texture> {
         let surfaces = self.surfaces.lock().unwrap();
         surfaces.get(&id).map(|tb| {
@@ -221,9 +280,20 @@ impl<G: Gpu> SurfaceRegistry<G> {
         })
     }
 
+    /// GPUI-3D : texture, vue et taille du tampon de rendu, lues sous un même verrou.
+    pub fn back_buffer(&self, id: SurfaceId) -> Option<(G::Texture, G::TextureView, (u32, u32))> {
+        let surfaces = self.surfaces.lock().unwrap();
+        surfaces.get(&id).map(|tb| {
+            let (rendering, _, _) = TripleBuffer::<G>::unpack_state(tb.state.load(Ordering::Acquire));
+            let index = rendering as usize;
+            (tb.textures[index].clone(), tb.views[index].clone(), (tb.width, tb.height))
+        })
+    }
+
     /// Atomically retrieve both the rendering view and the corresponding texture
     /// dimensions. This is useful when a caller needs to create auxiliary
     /// resources (e.g. a depth buffer) that must exactly match the view's size.
+    #[cfg_attr(not(feature = "wgpu"), allow(dead_code))]
     pub fn lock_and_get_back_with_size(
         &self,
         id: SurfaceId,
@@ -315,6 +385,7 @@ impl<G: Gpu> SurfaceRegistry<G> {
 
     /// Set the redraw pending flag, returning the previous value.
     /// Used by present() to coalesce multiple redraw requests.
+    #[cfg_attr(not(feature = "wgpu"), allow(dead_code))]
     pub fn set_redraw_pending(&self, id: SurfaceId) -> bool {
         if let Some(tb) = self.surfaces.lock().unwrap().get(&id) {
             tb.redraw_pending.swap(true, Ordering::Relaxed)
@@ -485,10 +556,7 @@ impl<G: Gpu> SurfaceRegistry<G> {
 
         let textures = ["surface_buffer_0", "surface_buffer_1", "surface_buffer_2"]
             .map(|label| self.gpu.create_texture(label, w, h, format, usage));
-        {
-            let _queue = self.queue_lock();
-            self.gpu.init_external_textures([&textures[0], &textures[1], &textures[2]]);
-        }
+        self.gpu.init_external_textures([&textures[0], &textures[1], &textures[2]]);
         let views = [
             G::create_view(&textures[0]),
             G::create_view(&textures[1]),
@@ -677,7 +745,7 @@ mod tests {
             .into_iter()
             .next()?;
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
-        Some(Arc::new(G { instance, adapter, device, queue, desired_maximum_frame_latency: 2 }))
+        Some(Arc::new(G { instance, adapter, device, queue, desired_maximum_frame_latency: 2, queue_lock: Default::default() }))
     }
 
     /// Headless (surface-less) `wgpu::Device`/`Queue`; a missing adapter skips

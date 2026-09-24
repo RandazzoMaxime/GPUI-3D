@@ -17,7 +17,7 @@
 
 use std::ops::{BitOr, Range};
 
-use crate::{GpuSpecs, WindowPresentMode};
+use crate::{GpuSpecs, NativeDevice, NativeTexture, SurfaceFormat, WindowPresentMode};
 
 #[cfg(feature = "wgpu")]
 pub(crate) mod wgpu;
@@ -189,8 +189,8 @@ pub(crate) enum Acquire<F> {
 pub(crate) trait Gpu: Sized + Send + Sync + 'static {
     type Format: Copy + PartialEq + std::fmt::Debug + Send + Sync;
     type Buffer: Clone + Send + Sync;
-    type Texture: Clone + Send + Sync;
-    type TextureView: Clone + Send + Sync;
+    type Texture: Clone + Send + Sync + 'static;
+    type TextureView: Clone + Send + Sync + 'static;
     type Sampler: Send + Sync;
     type BindGroupLayout: Send + Sync;
     type BindGroup: Clone + Send + Sync;
@@ -305,6 +305,15 @@ pub(crate) trait Gpu: Sized + Send + Sync + 'static {
     /// Efface les tampons d'une surface 3D et les laisse dans l'état « échantillonné »
     /// que les moteurs externes attendent entre deux trames.
     fn init_external_textures(&self, textures: [&Self::Texture; 3]);
+
+    /// Format des tampons d'une surface 3D.
+    fn surface_format(format: SurfaceFormat) -> Self::Format;
+    /// Verrou de la queue partagée avec les moteurs 3D natifs : l'implémentation le prend
+    /// autour de ses propres accès à la queue, un moteur autour de ses soumissions.
+    fn queue_lock(&self) -> parking_lot::MutexGuard<'_, ()>;
+    /// Poignées natives du device et de la queue (`None` : API sans interop native).
+    fn native_device(&self) -> Option<NativeDevice>;
+    fn native_texture(texture: &Self::Texture, view: &Self::TextureView) -> Option<NativeTexture>;
 }
 
 /// Profilage GPU de la feature `flamegraph` (timestamps de passes, capture profonde).

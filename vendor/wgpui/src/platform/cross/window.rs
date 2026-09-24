@@ -80,6 +80,40 @@ impl Callbacks {
 }
 
 impl CrossWindow {
+    /// Surface triple-buffer de `width`×`height` sur le device de l'UI, publiée à la
+    /// fenêtre par un réveil de sa boucle d'événements.
+    fn surface_handle<G: super::hal::Gpu>(
+        &self,
+        context: &super::render_context::RenderContext<G>,
+        width: u32,
+        height: u32,
+        format: G::Format,
+        #[cfg(feature = "wgpu")] wgpu: Option<crate::elements::WgpuParts>,
+    ) -> crate::SurfaceHandle {
+        let registry = context.surface_registry.clone();
+        let surface_id = registry.create(width, height, format);
+        let proxy = self.0.event_loop_proxy.clone();
+        let window_id = self.0.winit_window.get().map(|w| w.id());
+        let present_trigger: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+            if let Some(wid) = window_id {
+                if let Err(error) = proxy.send_event(CrossEvent::SurfacePresent(wid)) {
+                    log::debug!("boucle d'événements fermée, surface non publiée : {error}");
+                }
+            }
+        });
+        crate::SurfaceHandle::new(
+            surface_id,
+            registry,
+            present_trigger,
+            self.0.winit_window.get().cloned(),
+            context.gpu_submit_lock.clone(),
+            width,
+            height,
+            #[cfg(feature = "wgpu")]
+            wgpu,
+        )
+    }
+
     pub(crate) fn new(gpu: GpuContext, event_loop_proxy: EventLoopProxy<CrossEvent>) -> Self {
         Self(Arc::new(CrossWindowInner {
             winit_window: OnceCell::new(),
@@ -515,6 +549,32 @@ impl PlatformWindow for CrossWindow {
         self.window().set_ime_allowed(ime_allowed);
     }
 
+    fn create_surface(
+        &self,
+        width: u32,
+        height: u32,
+        format: crate::SurfaceFormat,
+    ) -> Option<crate::SurfaceHandle> {
+        use super::hal::Gpu as _;
+        match &self.0.gpu {
+            #[cfg(feature = "wgpu")]
+            GpuContext::Wgpu(_) => {
+                let format = super::hal::wgpu::WgpuGpu::surface_format(format);
+                self.create_wgpu_surface(width, height, format).map(Into::into)
+            }
+            #[cfg(feature = "vulkan")]
+            GpuContext::Vulkan(context) => Some(self.surface_handle(
+                context,
+                width,
+                height,
+                super::hal::vulkan::VulkanGpu::surface_format(format),
+                #[cfg(feature = "wgpu")]
+                None,
+            )),
+            GpuContext::Absent(never) => match *never {},
+        }
+    }
+
     #[cfg(feature = "wgpu")]
     fn create_wgpu_surface(
         &self,
@@ -523,34 +583,15 @@ impl PlatformWindow for CrossWindow {
         format: wgpu::TextureFormat,
     ) -> Option<crate::WgpuSurfaceHandle> {
         #[allow(irrefutable_let_patterns)]
-        let GpuContext::Wgpu(ctx) = &self.0.gpu else { return None };
-        let registry = ctx.surface_registry.clone();
-        let surface_id = registry.create(width, height, format);
-
-        // Build the present trigger: sends a CrossEvent to wake the event loop
-        // and request a redraw for this window.
-        let proxy = self.0.event_loop_proxy.clone();
-        let window_id = self.0.winit_window.get().map(|w| w.id());
-        let present_trigger: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
-            if let Some(wid) = window_id {
-                let _ = proxy.send_event(CrossEvent::SurfacePresent(wid));
-            }
-        });
-
-        // capture winit window Arc so handle can request redraw directly
-        let winit_arc = self.0.winit_window.get().cloned();
-        Some(crate::WgpuSurfaceHandle::new(
-            ctx.device.clone(),
-            ctx.queue.clone(),
-            surface_id,
-            registry,
-            present_trigger,
-            winit_arc,
-            ctx.gpu_submit_lock.clone(),
-            width,
-            height,
+        let GpuContext::Wgpu(context) = &self.0.gpu else { return None };
+        let parts = crate::elements::WgpuParts {
+            device: context.device.clone(),
+            queue: context.queue.clone(),
+            registry: context.surface_registry.clone(),
             format,
-        ))
+        };
+        let handle = self.surface_handle(context, width, height, format, Some(parts));
+        crate::WgpuSurfaceHandle::new(handle)
     }
 
     fn sprite_atlas(&self) -> std::sync::Arc<dyn crate::PlatformAtlas> {

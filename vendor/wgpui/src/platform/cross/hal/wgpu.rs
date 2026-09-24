@@ -11,7 +11,7 @@ use super::{
     Acquire, BindEntry, BindResource, BindingKind, Blend, BufferUsage, Gpu, LayoutEntry, LoadOp,
     PassDesc, PipelineDesc, ShaderStages, TextureUsage, Topology,
 };
-use crate::{GpuSpecs, WindowPresentMode};
+use crate::{GpuSpecs, NativeDevice, NativeTexture, SurfaceFormat, WindowPresentMode};
 
 /// Device wgpu partagé par l'UI et les moteurs 3D d'une application.
 pub(crate) struct WgpuGpu {
@@ -20,6 +20,9 @@ pub(crate) struct WgpuGpu {
     pub(crate) device: wgpu::Device,
     pub(crate) queue: wgpu::Queue,
     pub(crate) desired_maximum_frame_latency: u32,
+    /// wgpu ignore les soumissions natives sur sa `VkQueue` : ce verrou les exclut des
+    /// siennes (`submit`, `present`).
+    pub(crate) queue_lock: parking_lot::Mutex<()>,
 }
 
 pub(crate) struct WgpuSwapchain {
@@ -533,10 +536,13 @@ impl Gpu for WgpuGpu {
     }
 
     fn submit(&self, encoder: wgpu::CommandEncoder) {
-        self.queue.submit(Some(encoder.finish()));
+        let command_buffer = encoder.finish();
+        let _queue = self.queue_lock.lock();
+        self.queue.submit(Some(command_buffer));
     }
 
     fn present(&self, frame: wgpu::SurfaceTexture) {
+        let _queue = self.queue_lock.lock();
         self.queue.present(frame);
     }
 
@@ -571,6 +577,78 @@ impl Gpu for WgpuGpu {
             }),
         );
         self.submit(encoder);
+    }
+
+    fn surface_format(format: SurfaceFormat) -> wgpu::TextureFormat {
+        match format {
+            SurfaceFormat::Bgra8UnormSrgb => wgpu::TextureFormat::Bgra8UnormSrgb,
+            SurfaceFormat::Rgba8UnormSrgb => wgpu::TextureFormat::Rgba8UnormSrgb,
+        }
+    }
+
+    fn queue_lock(&self) -> parking_lot::MutexGuard<'_, ()> {
+        self.queue_lock.lock()
+    }
+
+    fn native_device(&self) -> Option<NativeDevice> {
+        #[cfg(target_vendor = "apple")]
+        // SAFETY: poignées lues sans être détruites ; le device survit à l'appelant.
+        if let Some(device) = unsafe { self.device.as_hal::<wgpu::hal::api::Metal>() } {
+            // SAFETY: idem.
+            let queue = unsafe { self.queue.as_hal::<wgpu::hal::api::Metal>() }?;
+            return Some(NativeDevice::Metal {
+                device: &**device.raw_device() as *const _ as *mut std::ffi::c_void,
+                queue: queue.as_raw() as *const _ as *mut std::ffi::c_void,
+            });
+        }
+        #[cfg(windows)]
+        // SAFETY: poignées lues sans être détruites ; le device survit à l'appelant.
+        if let Some(device) = unsafe { self.device.as_hal::<wgpu::hal::api::Dx12>() } {
+            // SAFETY: idem.
+            let queue = unsafe { self.queue.as_hal::<wgpu::hal::api::Dx12>() }?;
+            return Some(NativeDevice::Dx12 {
+                device: windows_core::Interface::as_raw(device.raw_device()),
+                queue: windows_core::Interface::as_raw(queue.as_raw()),
+            });
+        }
+        #[cfg(not(target_family = "wasm"))]
+        // SAFETY: poignées lues sans être détruites ; le device survit à l'appelant.
+        if let Some(device) = unsafe { self.device.as_hal::<wgpu::hal::api::Vulkan>() } {
+            use ash::vk::Handle as _;
+            return Some(NativeDevice::Vulkan {
+                instance: device.shared_instance().raw_instance().handle().as_raw(),
+                physical_device: device.raw_physical_device().as_raw(),
+                device: device.raw_device().handle().as_raw(),
+                queue: device.raw_queue().as_raw(),
+                queue_family_index: device.queue_family_index(),
+            });
+        }
+        None
+    }
+
+    fn native_texture(texture: &wgpu::Texture, view: &wgpu::TextureView) -> Option<NativeTexture> {
+        #[cfg(target_vendor = "apple")]
+        // SAFETY: poignée lue sans être détruite ; l'appelant retient la texture.
+        if let Some(raw) = unsafe { texture.as_hal::<wgpu::hal::api::Metal>() } {
+            return Some(NativeTexture::Metal(raw.raw_handle() as *const _ as *mut std::ffi::c_void));
+        }
+        #[cfg(windows)]
+        // SAFETY: poignée lue sans être détruite ; l'appelant retient la texture.
+        if let Some(raw) = unsafe { texture.as_hal::<wgpu::hal::api::Dx12>() } {
+            // SAFETY: idem.
+            return Some(NativeTexture::Dx12(windows_core::Interface::as_raw(unsafe { raw.raw_resource() })));
+        }
+        #[cfg(not(target_family = "wasm"))]
+        {
+            use ash::vk::Handle as _;
+            // SAFETY: poignées lues sans être détruites ; l'appelant retient texture et vue.
+            let image = unsafe { texture.as_hal::<wgpu::hal::api::Vulkan>()?.raw_handle() }.as_raw();
+            // SAFETY: idem.
+            let view = unsafe { view.as_hal::<wgpu::hal::api::Vulkan>()?.raw_handle() }.as_raw();
+            return Some(NativeTexture::Vulkan { image, view });
+        }
+        #[allow(unreachable_code)]
+        None
     }
 }
 

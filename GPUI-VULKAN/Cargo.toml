@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-gpui3d-shell.workspace = true
+# Full natif : l'UI de GPUI rend elle aussi en Vulkan (ash), sans wgpu.
+gpui3d-shell = { workspace = true, features = ["vulkan"] }
 bytemuck.workspace = true
 # Vulkan natif. Aucune dépendance wgpu : GPUI ne fournit que des poignées brutes.
 ash = "0.38"

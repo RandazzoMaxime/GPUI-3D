@@ -16,8 +16,6 @@ pub mod slab;
 #[cfg(any(feature = "wgpu", test))]
 pub mod shaders;
 pub mod slab_gpu;
-// Sans wgpu, aucune API publique de surface 3D ne l'alimente encore (élément `WgpuSurface`).
-#[cfg_attr(not(feature = "wgpu"), allow(dead_code))]
 pub mod surface_registry;
 pub mod text_system;
 pub mod window;

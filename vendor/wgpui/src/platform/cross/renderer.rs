@@ -2791,11 +2791,9 @@ impl<G: Gpu> Renderer<G> {
         }
 
         log::trace!("Renderer::draw: submitting command buffer");
-        let queue_guard = self.context.surface_registry.queue_lock();
         self.context.submit(command_encoder);
         log::trace!("Renderer::draw: presenting surface");
         self.context.present(surface_texture);
-        drop(queue_guard);
 
         // Start the async readbacks now that their commands were submitted.
         #[cfg(feature = "flamegraph")]

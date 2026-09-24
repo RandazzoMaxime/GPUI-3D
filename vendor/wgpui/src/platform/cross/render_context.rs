@@ -347,6 +347,7 @@ impl WgpuContext {
                 device,
                 queue,
                 desired_maximum_frame_latency: options.desired_maximum_frame_latency,
+                queue_lock: Default::default(),
             }))
         } // end #[cfg(not(target_family = "wasm"))]
     }
@@ -399,6 +400,7 @@ impl WgpuContext {
             device,
             queue,
             desired_maximum_frame_latency: options.desired_maximum_frame_latency,
+            queue_lock: Default::default(),
         }))
     }
 

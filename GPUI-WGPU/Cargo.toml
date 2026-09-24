@@ -4,6 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-gpui3d-shell.workspace = true
+gpui3d-shell = { workspace = true, features = ["wgpu"] }
 wgpu.workspace = true
 bytemuck.workspace = true

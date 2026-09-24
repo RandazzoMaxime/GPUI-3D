@@ -6256,6 +6256,18 @@ impl Window {
         });
     }
 
+    /// Surface triple-buffer pour un rendu externe (moteur 3D) sur le device de l'UI,
+    /// quel que soit son backend. `None` sans renderer GPU. Afficher avec
+    /// [`crate::gpu_surface`], rendre via [`crate::SurfaceHandle::native_back_buffer`].
+    pub fn create_surface(
+        &self,
+        width: u32,
+        height: u32,
+        format: crate::SurfaceFormat,
+    ) -> Option<crate::SurfaceHandle> {
+        self.platform_window.create_surface(width, height, format)
+    }
+
     /// Create a double-buffered WGPU surface handle for external GPU rendering.
     ///
     /// Returns `None` on platforms that don't use the WGPU renderer.

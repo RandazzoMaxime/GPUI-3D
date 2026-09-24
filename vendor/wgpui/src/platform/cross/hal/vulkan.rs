@@ -31,7 +31,7 @@ use super::{
     Acquire, BindEntry, BindResource, BindingKind, Blend, BufferUsage, Gpu, LayoutEntry, LoadOp,
     PassDesc, PipelineDesc, ShaderId, ShaderStages, TextureUsage, Topology,
 };
-use crate::{GpuSpecs, WindowPresentMode};
+use crate::{GpuSpecs, NativeDevice, NativeTexture, SurfaceFormat, WindowPresentMode};
 
 const STAGING_CHUNK: u64 = 4 * 1024 * 1024;
 const DESCRIPTOR_POOL_SETS: u32 = 1024;
@@ -1817,5 +1817,33 @@ impl Gpu for VulkanGpu {
             recorder.use_image(device, texture, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
         }
         self.0.submit(recorder);
+    }
+
+    fn surface_format(format: SurfaceFormat) -> vk::Format {
+        match format {
+            SurfaceFormat::Bgra8UnormSrgb => vk::Format::B8G8R8A8_SRGB,
+            SurfaceFormat::Rgba8UnormSrgb => vk::Format::R8G8B8A8_SRGB,
+        }
+    }
+
+    fn queue_lock(&self) -> parking_lot::MutexGuard<'_, ()> {
+        self.0.queue_lock.lock()
+    }
+
+    fn native_device(&self) -> Option<NativeDevice> {
+        use ash::vk::Handle as _;
+        let shared = &self.0;
+        Some(NativeDevice::Vulkan {
+            instance: shared.instance.handle().as_raw(),
+            physical_device: shared.physical_device.as_raw(),
+            device: shared.device.handle().as_raw(),
+            queue: shared.queue.as_raw(),
+            queue_family_index: shared.queue_family,
+        })
+    }
+
+    fn native_texture(texture: &VkTexture, view: &VkTextureView) -> Option<NativeTexture> {
+        use ash::vk::Handle as _;
+        Some(NativeTexture::Vulkan { image: texture.0.raw.as_raw(), view: view.0.raw.as_raw() })
     }
 }

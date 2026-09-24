@@ -1,4 +1,5 @@
-//! Moteur 3D en Vulkan natif (ash), sans wgpu : GPUI fournit ses `VkInstance`,
+//! Full natif : l'UI de GPUI et ce moteur 3D rendent tous deux en Vulkan (ash), sans
+//! wgpu dans le binaire. GPUI fournit ses `VkInstance`,
 //! `VkDevice`, `VkQueue` et l'image du tampon arrière ; mémoire, commandes, fences,
 //! render pass et pipeline sont à nous. Même `VkQueue` que le compositeur (sous
 //! `native_queue_lock`) ⇒ l'ordre de soumission porte la synchronisation.
@@ -7,8 +8,8 @@ use std::io::Cursor;
 
 use ash::vk::{self, Handle as _};
 use gpui3d_shell::{
-    Backends, CLEAR_COLOR, CUBE_INDICES, CUBE_VERTICES, NativeBackBuffer, NativeDevice, NativeTexture, Renderer, Scene,
-    Surface,
+    CLEAR_COLOR, CUBE_INDICES, CUBE_VERTICES, NativeBackBuffer, NativeDevice, NativeTexture, Renderer, Scene,
+    Surface, Ui,
 };
 
 /// = `gpui3d_shell::SURFACE_FORMAT`.
@@ -414,5 +415,5 @@ fn create_pipeline(device: &ash::Device, render_pass: vk::RenderPass, layout: vk
 }
 
 fn main() {
-    gpui3d_shell::run::<VulkanCube>("Vulkan natif", Backends::VULKAN);
+    gpui3d_shell::run::<VulkanCube>("Vulkan natif", Ui::Vulkan);
 }
