@@ -136,6 +136,8 @@ pub(crate) struct Scene {
     /// resolves each against its own registry at draw time — the scene never
     /// holds GPU state, only the marker plus the packed bytes that back it.
     pub(crate) layer_slab_spans: Vec<LayerSlabSpan>,
+    /// GPUI-3D : emprises en cours d'accumulation (voir [`Scene::begin_extent`]).
+    extent_stack: Vec<Option<Bounds<ScaledPixels>>>,
 }
 
 impl Default for Scene {
@@ -161,6 +163,7 @@ impl Default for Scene {
             polychrome_sprites: Vec::new(),
             surfaces: Vec::new(),
             layer_slab_spans: Vec::new(),
+            extent_stack: Vec::new(),
         }
     }
 }
@@ -190,6 +193,7 @@ impl Scene {
         self.polychrome_sprites.clear();
         self.surfaces.clear();
         self.layer_slab_spans.clear();
+        self.extent_stack.clear();
     }
 
     pub fn len(&self) -> usize {
@@ -521,6 +525,9 @@ impl Scene {
         // colliding with unrelated non-overlapping content that reuses low orderings (e.g. a
         // background grid), which would otherwise sweep that content into the group.
         let is_filter_boundary = matches!(primitive, Primitive::FilterBoundary(_));
+        if !self.extent_stack.is_empty() {
+            self.union_extent(*primitive.bounds());
+        }
 
         if clipped_bounds.is_empty() && !is_filter_boundary {
             return;
@@ -578,7 +585,196 @@ impl Scene {
         }
     }
 
+    /// GPUI-3D : rejoue une plage de la scène précédente décalée de `delta` et recoupée
+    /// par `clip`. Seules les vues dont la plage ne contient ni slab ni couche retenue
+    /// passent ici (`Window::translation_supported`).
+    pub(crate) fn replay_translated(
+        &mut self,
+        range: Range<usize>,
+        prev_scene: &Scene,
+        delta: Point<ScaledPixels>,
+        clip: Bounds<ScaledPixels>,
+    ) {
+        if self.replay_block(range.clone(), prev_scene, Some((delta, clip))) {
+            return;
+        }
+        for operation in &prev_scene.paint_operations[range] {
+            match operation {
+                PaintOperation::Primitive(primitive) => {
+                    let mut primitive = primitive.clone();
+                    primitive.translate_and_clip(delta, &clip);
+                    self.insert_primitive(primitive);
+                }
+                PaintOperation::StartLayer(bounds) => {
+                    let mut bounds = *bounds;
+                    bounds.origin.x += delta.x;
+                    bounds.origin.y += delta.y;
+                    self.push_layer(bounds);
+                }
+                PaintOperation::EndLayer => self.pop_layer(),
+                PaintOperation::LayerSlab(_) => {
+                    debug_assert!(false, "replay_translated: slab dans une plage translatable");
+                }
+            }
+        }
+    }
+
+    /// GPUI-3D : vrai si la plage contient un slab de couche retenue (non translatable).
+    pub(crate) fn range_has_layer_slab(&self, range: Range<usize>) -> bool {
+        self.paint_operations
+            .get(range)
+            .is_some_and(|ops| ops.iter().any(|op| matches!(op, PaintOperation::LayerSlab(_))))
+    }
+
+    /// GPUI-3D : commence à accumuler l'emprise (bornes non découpées) des primitives
+    /// insérées, y compris celles que le masque élimine.
+    pub(crate) fn begin_extent(&mut self) {
+        self.extent_stack.push(None);
+    }
+
+    /// Termine l'accumulation ouverte par [`Self::begin_extent`] ; l'emprise remonte
+    /// aussi dans l'accumulation englobante.
+    pub(crate) fn end_extent(&mut self) -> Option<Bounds<ScaledPixels>> {
+        let extent = self.extent_stack.pop().flatten();
+        if let Some(extent) = extent {
+            self.union_extent(extent);
+        }
+        extent
+    }
+
+    /// Ajoute `bounds` à l'accumulation d'emprise courante, s'il y en a une.
+    pub(crate) fn union_extent(&mut self, bounds: Bounds<ScaledPixels>) {
+        if let Some(top) = self.extent_stack.last_mut() {
+            *top = Some(match top {
+                Some(extent) => extent.union(&bounds),
+                None => bounds,
+            });
+        }
+    }
+
     pub fn replay(&mut self, range: Range<usize>, prev_scene: &Scene) {
+        if self.replay_block(range.clone(), prev_scene, None) {
+            return;
+        }
+        self.replay_each(range, prev_scene);
+    }
+
+    /// GPUI-3D : rejoue une plage comme un bloc déjà ordonné. Au lieu d'une insertion
+    /// `BoundsTree` par primitive, le bloc réserve une plage d'ordres au-dessus de tout ce
+    /// qui recouvre son emprise, et garde l'ordre interne enregistré (`o − o_min`). Un
+    /// réordonnancement plus conservateur, jamais faux. `false` : plage non éligible,
+    /// rien n'a été émis.
+    fn replay_block(
+        &mut self,
+        range: Range<usize>,
+        prev_scene: &Scene,
+        transform: Option<(Point<ScaledPixels>, Bounds<ScaledPixels>)>,
+    ) -> bool {
+        if !block_replay_enabled() {
+            return false;
+        }
+        let scope = self.active_scope();
+        let recording = matches!(self.capture_stack.last(), Some((_, Some(_))));
+        let in_clip_group = self.clip_stack.last().is_some_and(|clip| clip.scope == scope);
+        if recording || in_clip_group {
+            return false;
+        }
+        let Some(operations) = prev_scene.paint_operations.get(range) else {
+            return false;
+        };
+        let prepared = |primitive: &Primitive| {
+            let mut primitive = primitive.clone();
+            if let Some((delta, clip)) = &transform {
+                primitive.translate_and_clip(*delta, clip);
+            }
+            primitive
+        };
+        let mut union: Option<Bounds<ScaledPixels>> = None;
+        let (mut min_order, mut max_order) = (DrawOrder::MAX, 0);
+        for operation in operations {
+            match operation {
+                PaintOperation::Primitive(primitive) => {
+                    if matches!(primitive, Primitive::FilterBoundary(_) | Primitive::BackdropFilter(_)) {
+                        return false;
+                    }
+                    let clipped = match &transform {
+                        None => primitive.bounds().intersect(&primitive.content_mask().bounds),
+                        Some(_) => {
+                            let primitive = prepared(primitive);
+                            primitive.bounds().intersect(&primitive.content_mask().bounds)
+                        }
+                    };
+                    if clipped.is_empty() {
+                        continue;
+                    }
+                    union = Some(union.map_or(clipped, |u| u.union(&clipped)));
+                    let order = primitive_order(primitive);
+                    min_order = min_order.min(order);
+                    max_order = max_order.max(order);
+                }
+                PaintOperation::StartLayer(_) | PaintOperation::EndLayer => {}
+                PaintOperation::LayerSlab(_) => return false,
+            }
+        }
+        let Some(union) = union else {
+            // Rien de visible : seules les marques de groupe sont conservées.
+            for operation in operations {
+                if let PaintOperation::StartLayer(bounds) = operation {
+                    let mut bounds = *bounds;
+                    if let Some((delta, _)) = &transform {
+                        bounds.origin.x += delta.x;
+                        bounds.origin.y += delta.y;
+                    }
+                    self.paint_operations.push(PaintOperation::StartLayer(bounds));
+                } else if matches!(operation, PaintOperation::EndLayer) {
+                    self.paint_operations.push(PaintOperation::EndLayer);
+                }
+            }
+            return true;
+        };
+        let base = {
+            let _t = crate::render_stats::scope("frame: bounds tree");
+            let base = self.scopes[scope].tree.insert(union);
+            let top = base + (max_order - min_order);
+            if top > base {
+                self.scopes[scope].tree.insert_at_order(union, top);
+            }
+            base
+        };
+        self.note_order(base + (max_order - min_order), union);
+        crate::render_stats::count("scene: block replays");
+        for operation in operations {
+            match operation {
+                PaintOperation::Primitive(primitive) => {
+                    let mut primitive = prepared(primitive);
+                    if primitive.bounds().intersect(&primitive.content_mask().bounds).is_empty() {
+                        continue;
+                    }
+                    let order = base + (primitive_order(&primitive) - min_order);
+                    set_primitive_order(&mut primitive, order);
+                    if let Primitive::Path(path) = &mut primitive {
+                        path.id = PathId(self.paths.len());
+                    }
+                    count_primitive(&primitive);
+                    self.push_to_array(&primitive);
+                    self.paint_operations.push(PaintOperation::Primitive(primitive));
+                }
+                PaintOperation::StartLayer(bounds) => {
+                    let mut bounds = *bounds;
+                    if let Some((delta, _)) = &transform {
+                        bounds.origin.x += delta.x;
+                        bounds.origin.y += delta.y;
+                    }
+                    self.paint_operations.push(PaintOperation::StartLayer(bounds));
+                }
+                PaintOperation::EndLayer => self.paint_operations.push(PaintOperation::EndLayer),
+                PaintOperation::LayerSlab(_) => unreachable!("exclu au premier passage"),
+            }
+        }
+        true
+    }
+
+    fn replay_each(&mut self, range: Range<usize>, prev_scene: &Scene) {
         for operation in &prev_scene.paint_operations[range] {
             match operation {
                 PaintOperation::Primitive(primitive) => self.insert_primitive(primitive.clone()),
@@ -731,14 +927,12 @@ impl Scene {
             };
         }
         self.resolve_orders();
-        self.shadows.sort_by_key(|shadow| shadow.order);
-        self.quads.sort_by_key(|quad| quad.order);
-        self.paths.sort_by_key(|path| path.order);
-        self.underlines.sort_by_key(|underline| underline.order);
-        self.monochrome_sprites
-            .sort_by_key(|sprite| (sprite.order, sprite.tile.tile_id));
-        self.polychrome_sprites
-            .sort_by_key(|sprite| (sprite.order, sprite.tile.tile_id));
+        sort_primitives(&mut self.shadows, |shadow| (shadow.order, 0));
+        sort_primitives(&mut self.quads, |quad| (quad.order, 0));
+        sort_primitives(&mut self.paths, |path| (path.order, 0));
+        sort_primitives(&mut self.underlines, |underline| (underline.order, 0));
+        sort_primitives(&mut self.monochrome_sprites, |sprite| (sprite.order, sprite.tile.tile_id.0));
+        sort_primitives(&mut self.polychrome_sprites, |sprite| (sprite.order, sprite.tile.tile_id.0));
         self.surfaces.sort_by_key(|surface| surface.order);
         self.backdrop_filters.sort_by_key(|filter| filter.order);
         // Markers normally get distinct, monotonically-increasing orders (children overlap
@@ -1132,6 +1326,94 @@ impl Primitive {
             Primitive::FilterBoundary(boundary) => &boundary.content_mask,
         }
     }
+}
+
+impl Primitive {
+    /// GPUI-3D : déplace la primitive de `delta` et recoupe son masque par `clip`.
+    /// Le masque enregistré est translaté avec elle : c'est l'appelant qui garantit
+    /// (`AnyViewState::valid_local`) qu'aucune découpe d'origine ne devient visible.
+    pub(crate) fn translate_and_clip(&mut self, delta: Point<ScaledPixels>, clip: &Bounds<ScaledPixels>) {
+        fn shift(bounds: &mut Bounds<ScaledPixels>, delta: Point<ScaledPixels>) {
+            bounds.origin.x += delta.x;
+            bounds.origin.y += delta.y;
+        }
+        fn mask(mask: &mut ContentMask<ScaledPixels>, delta: Point<ScaledPixels>, clip: &Bounds<ScaledPixels>) {
+            shift(&mut mask.bounds, delta);
+            mask.bounds = mask.bounds.intersect(clip);
+        }
+        match self {
+            Primitive::Shadow(p) => {
+                shift(&mut p.bounds, delta);
+                mask(&mut p.content_mask, delta, clip);
+            }
+            Primitive::Quad(p) => {
+                shift(&mut p.bounds, delta);
+                mask(&mut p.content_mask, delta, clip);
+            }
+            Primitive::Underline(p) => {
+                shift(&mut p.bounds, delta);
+                mask(&mut p.content_mask, delta, clip);
+            }
+            Primitive::PolychromeSprite(p) => {
+                shift(&mut p.bounds, delta);
+                mask(&mut p.content_mask, delta, clip);
+            }
+            Primitive::Surface(p) => {
+                shift(&mut p.bounds, delta);
+                mask(&mut p.content_mask, delta, clip);
+            }
+            Primitive::BackdropFilter(p) => {
+                shift(&mut p.bounds, delta);
+                mask(&mut p.content_mask, delta, clip);
+            }
+            Primitive::FilterBoundary(p) => {
+                shift(&mut p.bounds, delta);
+                mask(&mut p.content_mask, delta, clip);
+            }
+            Primitive::MonochromeSprite(p) => {
+                shift(&mut p.bounds, delta);
+                mask(&mut p.content_mask, delta, clip);
+                // Le shader calcule `Mᵀ·p + t` : pour décaler le résultat de δ, t' = t + δ − Mᵀδ.
+                let m = p.transformation.rotation_scale;
+                let (dx, dy) = (delta.x.0, delta.y.0);
+                p.transformation.translation[0] += dx - (m[0][0] * dx + m[1][0] * dy);
+                p.transformation.translation[1] += dy - (m[0][1] * dx + m[1][1] * dy);
+            }
+            Primitive::Path(p) => {
+                shift(&mut p.bounds, delta);
+                mask(&mut p.content_mask, delta, clip);
+                for vertex in &mut p.vertices {
+                    vertex.xy_position.x += delta.x;
+                    vertex.xy_position.y += delta.y;
+                    mask(&mut vertex.content_mask, delta, clip);
+                }
+            }
+        }
+    }
+}
+
+/// GPUI-3D : même résultat que `sort_by_key` (stable), sans déplacer chaque primitive
+/// O(log n) fois : une Quad ou un sprite pèsent 168 octets, et trier ~4 000 glyphes par
+/// tri stable coûtait ~15 % du fil principal pendant un défilement. On trie des paires
+/// (clé, indice), puis chaque élément est déplacé une fois ; rien si c'est déjà trié.
+fn sort_primitives<T>(items: &mut [T], key: impl Fn(&T) -> (DrawOrder, u32)) {
+    static CACHED: std::sync::LazyLock<bool> =
+        std::sync::LazyLock::new(|| std::env::var("GPUI_SORT_CACHED").map_or(true, |v| v != "0"));
+    if !*CACHED {
+        items.sort_by_key(key);
+        return;
+    }
+    if items.is_sorted_by_key(&key) {
+        return;
+    }
+    items.sort_by_cached_key(key);
+}
+
+/// GPUI-3D : `GPUI_BLOCK_REPLAY=0` rétablit le rejeu primitive par primitive.
+fn block_replay_enabled() -> bool {
+    static ENABLED: std::sync::LazyLock<bool> =
+        std::sync::LazyLock::new(|| std::env::var("GPUI_BLOCK_REPLAY").map_or(true, |v| v != "0"));
+    *ENABLED
 }
 
 fn primitive_order(primitive: &Primitive) -> DrawOrder {

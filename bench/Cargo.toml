@@ -1,0 +1,8 @@
+[package]
+name = "scroll-bench"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gpui.workspace = true
+libc = "0.2"
