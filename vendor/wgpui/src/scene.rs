@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     AtlasTextureId, AtlasTile, Background, Bounds, ContentMask, Corners, Edges, Hsla, LayerId,
     LayerKey, Pixels, Point, Radians, ScaledPixels, Size, TextColor, bounds_tree::BoundsTree,
-    layer::LayerItem, platform::cross::surface_registry::SurfaceId, point,
+    layer::LayerItem, point,
 };
 use std::{
     fmt::Debug,
@@ -1729,6 +1729,11 @@ impl From<PolychromeSprite> for Primitive {
         Primitive::PolychromeSprite(sprite)
     }
 }
+
+/// An opaque identifier for a registered 3D surface (external content composited by GPUI).
+/// GPUI-3D : indépendant du backend de rendu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SurfaceId(pub(crate) u64);
 
 /// The backing content for a painted surface.
 #[derive(Clone, Debug)]

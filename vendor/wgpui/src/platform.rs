@@ -8,7 +8,7 @@ mod test;
 pub(crate) mod cross;
 
 use crate::platform::cross::platform::CrossPlatform;
-use crate::WgpuOptions;
+use crate::RendererBackend;
 use crate::{
     Action, AnyWindowHandle, App, AsyncWindowContext, BackgroundExecutor, Bounds,
     DEFAULT_WINDOW_SIZE, DevicePixels, DispatchEventResult, Font, FontId, FontMetrics, FontRun,
@@ -56,17 +56,18 @@ pub use test::TestDispatcher;
 
 /// Returns a background executor for the current platform.
 pub fn background_executor() -> BackgroundExecutor {
-    current_platform(true, WgpuOptions::default()).background_executor()
+    current_platform(true, None).background_executor()
 }
 
-pub(crate) fn current_platform(headless: bool, wgpu_options: WgpuOptions) -> Rc<CrossPlatform> {
+/// GPUI-3D : `backend` = `None` quand aucun backend de rendu n'est compilé (ou en headless).
+pub(crate) fn current_platform(headless: bool, backend: Option<RendererBackend>) -> Rc<CrossPlatform> {
     if headless {
         Rc::new(
-            CrossPlatform::new_headless(wgpu_options)
+            CrossPlatform::new_headless(backend)
                 .expect("Failed to initialize headless platform"),
         )
     } else {
-        Rc::new(CrossPlatform::new(wgpu_options).expect("Failed to initialize platform"))
+        Rc::new(CrossPlatform::new(backend).expect("Failed to initialize platform"))
     }
 }
 
@@ -485,6 +486,7 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
 
     /// Create a double-buffered WGPU surface handle for external rendering.
     /// Returns `None` on platforms that don't use the WGPU renderer.
+    #[cfg(feature = "wgpu")]
     fn create_wgpu_surface(
         &self,
         _width: u32,

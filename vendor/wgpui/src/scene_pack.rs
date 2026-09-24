@@ -749,7 +749,7 @@ mod tests {
             bounds: rect(0., 0., 100., 100.),
             content_mask: mask(),
             corner_radii: Corners::default(),
-            content: SurfaceContent::Wgpu(crate::platform::cross::surface_registry::SurfaceId(7)),
+            content: SurfaceContent::Wgpu(crate::SurfaceId(7)),
         }
     }
 

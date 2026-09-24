@@ -10,6 +10,7 @@ pub type AdapterSelector =
     std::sync::Arc<dyn Fn(&[wgpu::AdapterInfo]) -> Option<usize> + Send + Sync>;
 
 /// Options for configuring the WGPU backend.
+#[derive(Clone)]
 pub struct WgpuOptions {
     /// Additional WGPU features to request when creating the device.
     /// These are OR'd with the features WGPUI itself requires.

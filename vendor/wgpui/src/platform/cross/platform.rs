@@ -3,12 +3,11 @@ use crate::{
     ForegroundExecutor, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, ModifiersChangedEvent,
     MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent, Pixels, Platform,
     PlatformInput, PlatformWindow as _, PriorityQueueReceiver, RunnableVariant, ScrollWheelEvent,
-    Size, WgpuOptions,
+    RendererBackend, Size,
     platform::cross::{
         dispatcher::{CrossEvent, Dispatcher},
+        gpu::GpuContext,
         keyboard::CrossKeyboardLayout,
-        render_context::WgpuContext,
-        renderer::WgpuRenderer,
         text_system::CosmicTextSystem,
         window::CrossWindow,
     },
@@ -70,8 +69,11 @@ pub(crate) struct CrossPlatform {
     background_executor: BackgroundExecutor,
     foreground_executor: ForegroundExecutor,
     text_system: Arc<CosmicTextSystem>,
-    wgpu_context: Arc<std::sync::OnceLock<Arc<WgpuContext>>>,
-    wgpu_options: WgpuOptions,
+    /// GPUI-3D : contexte du backend de rendu ; vide en headless, sans backend compilé,
+    /// ou en wasm tant que l'initialisation asynchrone n'a pas abouti.
+    gpu: Arc<std::sync::OnceLock<GpuContext>>,
+    #[cfg_attr(not(target_family = "wasm"), allow(dead_code))]
+    backend: Option<RendererBackend>,
     main_rx: PriorityQueueReceiver<RunnableVariant>,
     event_loop: Cell<Option<winit::event_loop::EventLoop<CrossEvent>>>,
     event_loop_proxy: winit::event_loop::EventLoopProxy<CrossEvent>,
@@ -107,9 +109,9 @@ struct AppState {
     pending_releases:
         FxHashMap<winit::window::WindowId, HashSet<MouseButton>>,
     #[cfg(target_family = "wasm")]
-    wgpu_context: Arc<std::sync::OnceLock<Arc<WgpuContext>>>,
+    wgpu_context: Arc<std::sync::OnceLock<GpuContext>>,
     #[cfg(target_family = "wasm")]
-    wgpu_options: WgpuOptions,
+    wgpu_options: crate::WgpuOptions,
     #[cfg(target_family = "wasm")]
     proxy: winit::event_loop::EventLoopProxy<CrossEvent>,
 }
@@ -129,29 +131,27 @@ struct ClickState {
 }
 
 impl CrossPlatform {
-    pub fn new(wgpu_options: WgpuOptions) -> Result<Self> {
-        Self::new_impl(false, wgpu_options)
+    pub fn new(backend: Option<RendererBackend>) -> Result<Self> {
+        Self::new_impl(false, backend)
     }
 
-    pub fn new_headless(wgpu_options: WgpuOptions) -> Result<Self> {
-        Self::new_impl(true, wgpu_options)
+    pub fn new_headless(backend: Option<RendererBackend>) -> Result<Self> {
+        Self::new_impl(true, backend)
     }
 
-    fn new_impl(headless: bool, wgpu_options: WgpuOptions) -> Result<Self> {
-        let wgpu_context: Arc<std::sync::OnceLock<Arc<WgpuContext>>> = if headless {
-            Arc::new(std::sync::OnceLock::new())
-        } else {
-            match WgpuContext::new(&wgpu_options) {
-            Ok(ctx) => {
-                let lock = Arc::new(std::sync::OnceLock::new());
-                lock.set(Arc::new(ctx)).ok();
-                lock
-            }
+    fn new_impl(headless: bool, backend: Option<RendererBackend>) -> Result<Self> {
+        let gpu = Arc::new(std::sync::OnceLock::new());
+        if let (false, Some(backend)) = (headless, &backend) {
             // On WASM, WgpuContext::new returns an error (needs async init).
             // The OnceLock stays empty; run() will fill it via spawn_local.
-            Err(_) => Arc::new(std::sync::OnceLock::new()),
+            #[cfg(target_family = "wasm")]
+            if let Ok(context) = GpuContext::new(backend) {
+                gpu.set(context).ok();
+            }
+            // Natif : un backend demandé qui ne démarre pas est une erreur, pas une app sans fenêtre.
+            #[cfg(not(target_family = "wasm"))]
+            gpu.set(GpuContext::new(backend)?).ok();
         }
-        };
 
         let (main_tx, main_rx) = PriorityQueueReceiver::new();
         let mut event_loop =
@@ -169,8 +169,8 @@ impl CrossPlatform {
             background_executor,
             foreground_executor,
             text_system,
-            wgpu_context,
-            wgpu_options,
+            gpu,
+            backend,
             main_rx,
             event_loop: Cell::new(Some(event_loop)),
             event_loop_proxy,
@@ -354,9 +354,10 @@ impl Platform for CrossPlatform {
             hovered_window_id: Cell::new(None),
             hovered_external_paths: Vec::new(),
             pending_releases: FxHashMap::default(),
-            wgpu_context: self.wgpu_context.clone(),
-            wgpu_options: WgpuOptions {
-                additional_features: self.wgpu_options.additional_features,
+            wgpu_context: self.gpu.clone(),
+            wgpu_options: match &self.backend {
+                Some(RendererBackend::Wgpu(options)) => options.clone(),
+                _ => crate::WgpuOptions::default(),
             },
             proxy: self.event_loop_proxy.clone(),
         };
@@ -499,10 +500,12 @@ impl Platform for CrossPlatform {
         handle: crate::AnyWindowHandle,
         options: crate::WindowParams,
     ) -> anyhow::Result<Box<dyn crate::PlatformWindow>> {
-        let window = CrossWindow::new(
-            self.wgpu_context.as_ref().get().expect("WgpuContext not initialized").clone(),
-            self.event_loop_proxy.clone(),
-        );
+        let gpu = self.gpu.get().cloned().ok_or_else(|| {
+            anyhow::anyhow!(
+                "aucun backend de rendu actif : compiler gpui-ce avec une feature de rendu                  (wgpu, …) et créer l'app avec Application::new / with_renderer"
+            )
+        })?;
+        let window = CrossWindow::new(gpu, self.event_loop_proxy.clone());
 
         let success = with_active_context(|event_loop, app_state| {
             let bounds = options.bounds;
@@ -1292,24 +1295,20 @@ impl winit::application::ApplicationHandler<CrossEvent> for AppState {
                 // The wgpu_context Arc is shared with CrossPlatform, so once
                 // set here, open_window() on the platform side finds it.
                 let wgpu_ctx = self.wgpu_context.clone();
-                let wgpu_opts = WgpuOptions {
-                    additional_features: self.wgpu_options.additional_features,
-                };
+                let wgpu_opts = self.wgpu_options.clone();
                 let proxy = self.proxy.clone();
                 // Use setTimeout(0) instead of spawn_local because winit's
                 // throw-based control flow would abort microtask processing.
                 let closure = wasm_bindgen::prelude::Closure::once({
                     let wgpu_ctx = wgpu_ctx.clone();
-                    let wgpu_opts_clone = WgpuOptions {
-                        additional_features: wgpu_opts.additional_features,
-                    };
+                    let wgpu_opts_clone = wgpu_opts.clone();
                     move || {
                         web_sys::console::log_1(&"WGPUI: async WGPU init starting via setTimeout".into());
                         wasm_bindgen_futures::spawn_local(async move {
-                            match WgpuContext::new_async(&wgpu_opts_clone).await {
+                            match crate::platform::cross::render_context::WgpuContext::new_async(&wgpu_opts_clone).await {
                                 Ok(ctx) => {
                                     web_sys::console::log_1(&"WGPUI: async WGPU init OK".into());
-                                    wgpu_ctx.set(Arc::new(ctx)).ok();
+                                    wgpu_ctx.set(GpuContext::Wgpu(Arc::new(ctx))).ok();
                                 }
                                 Err(e) => {
                                     let msg = format!("WGPUI: WASM WGPU init failed: {e}");
@@ -1447,15 +1446,16 @@ impl winit::application::ApplicationHandler<CrossEvent> for AppState {
                 } else {
                     // Renderer may not exist yet if initialization was skipped
                     // (e.g. canvas reported 0x0 on WASM). Create it now.
-                    let mut renderer = WgpuRenderer::new(
-                        window.0.wgpu_context.clone(),
-                        window.window(),
-                        window.0.sprite_atlas.clone(),
-                        physical_size.width,
-                        physical_size.height,
-                        4,
-                    )
-                    .expect("Failed to create renderer from resize");
+                    let mut renderer = window
+                        .0
+                        .gpu
+                        .new_renderer(
+                            window.window(),
+                            &window.0.sprite_atlas,
+                            physical_size.width,
+                            physical_size.height,
+                        )
+                        .expect("Failed to create renderer from resize");
                     renderer.update_drawable_size(Size {
                         width: DevicePixels(physical_size.width as i32),
                         height: DevicePixels(physical_size.height as i32),

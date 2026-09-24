@@ -14,6 +14,7 @@ mod svg;
 mod text;
 mod uniform_list;
 mod virtual_list;
+#[cfg(feature = "wgpu")]
 mod wgpu_surface;
 
 pub use anchored::*;
@@ -31,4 +32,5 @@ pub use svg::*;
 pub use text::*;
 pub use uniform_list::*;
 pub use virtual_list::*;
+#[cfg(feature = "wgpu")]
 pub use wgpu_surface::*;

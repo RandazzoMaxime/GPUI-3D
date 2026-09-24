@@ -41,9 +41,8 @@ fn stale_to_carry<T>(already_held: Option<T>, current_display: T) -> Option<T> {
     Some(already_held.unwrap_or(current_display))
 }
 
-/// An opaque identifier for a registered WGPU surface.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct SurfaceId(pub(crate) u64);
+// GPUI-3D : défini dans `scene` (indépendant du backend), réexporté ici.
+pub use crate::scene::SurfaceId;
 
 /// Triple-buffered surface for lock-free rendering.
 ///

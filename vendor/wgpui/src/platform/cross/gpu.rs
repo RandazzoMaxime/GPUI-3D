@@ -1,0 +1,182 @@
+//! GPUI-3D : backend de rendu de l'UI, choisi à l'exécution parmi ceux compilés.
+//!
+//! Chaque backend (feature Cargo) fournit un contexte par application, un atlas et un
+//! renderer par fenêtre. Les enums ci-dessous en font le dispatch ; leur variante
+//! `Absent` (inhabitée) les garde valides quand aucun backend n'est compilé : l'app
+//! démarre alors sans pouvoir ouvrir de fenêtre, avec une erreur explicite.
+
+// Sans aucun backend, tout est inatteignable : paramètres jamais lus, code mort attendu.
+#![cfg_attr(not(feature = "wgpu"), allow(unused_variables, unreachable_code))]
+
+use std::convert::Infallible;
+use std::sync::Arc;
+
+use anyhow::Result;
+
+use crate::{DevicePixels, GpuSpecs, LayerKey, PlatformAtlas, Scene, Size, SurfaceId, WindowPresentMode};
+
+#[cfg(feature = "wgpu")]
+use super::{
+    atlas::WgpuAtlas,
+    render_context::{WgpuContext, WgpuOptions},
+    renderer::WgpuRenderer,
+};
+
+#[cfg(all(target_family = "wasm", not(feature = "wgpu")))]
+compile_error!("gpui-ce en wasm exige la feature `wgpu` (seul backend disponible dans un navigateur).");
+
+/// Backend de rendu de l'UI, et donc du device partagé avec les moteurs 3D.
+#[derive(Clone)]
+#[non_exhaustive]
+pub enum RendererBackend {
+    /// wgpu : abstraction multi-API (Vulkan, Metal, D3D12, GL), choix de l'adaptateur
+    /// par [`WgpuOptions`].
+    #[cfg(feature = "wgpu")]
+    Wgpu(WgpuOptions),
+    #[doc(hidden)]
+    Absent(Infallible),
+}
+
+impl RendererBackend {
+    /// Premier backend compilé, dans l'ordre de déclaration ; `None` si aucun.
+    pub fn compiled_default() -> Option<Self> {
+        #[cfg(feature = "wgpu")]
+        return Some(Self::Wgpu(WgpuOptions::default()));
+        #[allow(unreachable_code)]
+        None
+    }
+}
+
+/// Contexte GPU de l'application : device, queue, ressources partagées entre fenêtres.
+#[derive(Clone)]
+pub(crate) enum GpuContext {
+    #[cfg(feature = "wgpu")]
+    Wgpu(Arc<WgpuContext>),
+    #[allow(dead_code)]
+    Absent(Infallible),
+}
+
+/// Atlas de sprites d'une fenêtre (glyphes, SVG, images).
+pub(crate) enum WindowAtlas {
+    #[cfg(feature = "wgpu")]
+    Wgpu(Arc<WgpuAtlas>),
+    #[allow(dead_code)]
+    Absent(Infallible),
+}
+
+/// Renderer d'une fenêtre : dessine la scène et compose les surfaces 3D.
+pub(crate) enum WindowRenderer {
+    #[cfg(feature = "wgpu")]
+    Wgpu(WgpuRenderer),
+    #[allow(dead_code)]
+    Absent(Infallible),
+}
+
+/// Applique `$body` à la valeur interne de chaque variante compilée.
+macro_rules! dispatch {
+    ($value:expr, $enum:ident, $inner:ident => $body:expr) => {
+        match $value {
+            #[cfg(feature = "wgpu")]
+            $enum::Wgpu($inner) => $body,
+            $enum::Absent(never) => match *never {},
+        }
+    };
+}
+
+impl GpuContext {
+    /// Crée le contexte du backend demandé.
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
+    pub(crate) fn new(backend: &RendererBackend) -> Result<Self> {
+        match backend {
+            #[cfg(feature = "wgpu")]
+            RendererBackend::Wgpu(options) => Ok(Self::Wgpu(Arc::new(WgpuContext::new(options)?))),
+            RendererBackend::Absent(never) => match *never {},
+        }
+    }
+
+    pub(crate) fn new_atlas(&self) -> WindowAtlas {
+        dispatch!(self, GpuContext, context => WindowAtlas::Wgpu(Arc::new(WgpuAtlas::new(context.clone()))))
+    }
+
+    /// Renderer d'une fenêtre de `width`×`height` pixels physiques, sur l'atlas de la fenêtre.
+    pub(crate) fn new_renderer(
+        &self,
+        window: &winit::window::Window,
+        atlas: &WindowAtlas,
+        width: u32,
+        height: u32,
+    ) -> Result<WindowRenderer> {
+        match (self, atlas) {
+            #[cfg(feature = "wgpu")]
+            (Self::Wgpu(context), WindowAtlas::Wgpu(atlas)) => Ok(WindowRenderer::Wgpu(WgpuRenderer::new(
+                context.clone(),
+                window,
+                atlas.clone(),
+                width,
+                height,
+                4,
+            )?)),
+            (Self::Absent(never), _) => match *never {},
+            #[allow(unreachable_patterns)]
+            (_, WindowAtlas::Absent(never)) => match *never {},
+        }
+    }
+}
+
+impl WindowAtlas {
+    pub(crate) fn as_platform(&self) -> Arc<dyn PlatformAtlas> {
+        dispatch!(self, WindowAtlas, atlas => atlas.clone())
+    }
+}
+
+impl WindowRenderer {
+    pub(crate) fn draw(&mut self, scene: &Scene) {
+        dispatch!(self, WindowRenderer, renderer => renderer.draw(scene))
+    }
+
+    pub(crate) fn update_drawable_size(&mut self, size: Size<DevicePixels>) {
+        dispatch!(self, WindowRenderer, renderer => renderer.update_drawable_size(size))
+    }
+
+    pub(crate) fn take_rerecord_requests(&mut self) -> Vec<LayerKey> {
+        dispatch!(self, WindowRenderer, renderer => renderer.take_rerecord_requests())
+    }
+
+    pub(crate) fn set_present_mode(&mut self, mode: WindowPresentMode) -> bool {
+        dispatch!(self, WindowRenderer, renderer => renderer.set_present_mode(mode))
+    }
+
+    pub(crate) fn lock_glass_backdrop(&mut self, key: u32) {
+        dispatch!(self, WindowRenderer, renderer => renderer.lock_glass_backdrop(key))
+    }
+
+    pub(crate) fn gpu_specs(&self) -> GpuSpecs {
+        dispatch!(self, WindowRenderer, renderer => renderer.gpu_specs())
+    }
+
+    pub(crate) fn get_pending_surfaces(&self) -> Option<Vec<SurfaceId>> {
+        dispatch!(self, WindowRenderer, renderer => renderer.get_pending_surfaces())
+    }
+
+    pub(crate) fn blit_surfaces_direct(&self, pending_surfaces: &[SurfaceId]) -> bool {
+        dispatch!(self, WindowRenderer, renderer => renderer.blit_surfaces_direct(pending_surfaces))
+    }
+
+    pub(crate) fn any_unconsumed_surface_frame(&self) -> bool {
+        dispatch!(self, WindowRenderer, renderer => renderer.any_unconsumed_surface_frame())
+    }
+
+    pub(crate) fn take_new_surface_frame(&self) -> bool {
+        dispatch!(self, WindowRenderer, renderer => renderer.take_new_surface_frame())
+    }
+
+    #[cfg(feature = "flamegraph")]
+    pub(crate) fn gpu_memory_snapshot(&self) -> crate::GpuMemorySnapshot {
+        dispatch!(self, WindowRenderer, renderer => renderer.gpu_memory_snapshot())
+    }
+
+    #[cfg(feature = "flamegraph")]
+    pub(crate) fn gpu_device_and_queue(&self) -> (wgpu::Device, wgpu::Queue) {
+        dispatch!(self, WindowRenderer, renderer => renderer.gpu_device_and_queue())
+    }
+}

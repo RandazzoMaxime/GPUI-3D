@@ -1,11 +1,12 @@
 use crate::{
     platform::cross::{
-        atlas::WgpuAtlas, dispatcher::CrossEvent, platform::CrossDisplay,
-        render_context::WgpuContext, renderer::WgpuRenderer, resize_detector::ResizeDetector,
+        dispatcher::CrossEvent,
+        gpu::{GpuContext, WindowAtlas, WindowRenderer},
+        platform::CrossDisplay,
+        resize_detector::ResizeDetector,
     },
     Bounds, Capslock, Decorations, Modifiers, Pixels, PlatformInputHandler, PlatformWindow, Point,
-    ResizeEdge, Size, WgpuSurfaceHandle, WindowAppearance, WindowBackgroundAppearance,
-    WindowBounds,
+    ResizeEdge, Size, WindowAppearance, WindowBackgroundAppearance, WindowBounds,
 };
 use std::{
     cell::{Cell, OnceCell, RefCell},
@@ -20,9 +21,9 @@ pub struct CrossWindow(pub(crate) Arc<CrossWindowInner>);
 
 pub(crate) struct CrossWindowInner {
     pub(crate) winit_window: OnceCell<Arc<winit::window::Window>>,
-    pub(crate) renderer: OnceCell<RefCell<WgpuRenderer>>,
-    pub(crate) wgpu_context: Arc<WgpuContext>,
-    pub(crate) sprite_atlas: Arc<WgpuAtlas>,
+    pub(crate) renderer: OnceCell<RefCell<WindowRenderer>>,
+    pub(crate) gpu: GpuContext,
+    pub(crate) sprite_atlas: WindowAtlas,
     pub(crate) event_loop_proxy: EventLoopProxy<CrossEvent>,
     pub(crate) state: CrossWindowState,
 }
@@ -79,15 +80,12 @@ impl Callbacks {
 }
 
 impl CrossWindow {
-    pub(crate) fn new(
-        wgpu_context: Arc<WgpuContext>,
-        event_loop_proxy: EventLoopProxy<CrossEvent>,
-    ) -> Self {
+    pub(crate) fn new(gpu: GpuContext, event_loop_proxy: EventLoopProxy<CrossEvent>) -> Self {
         Self(Arc::new(CrossWindowInner {
             winit_window: OnceCell::new(),
-            wgpu_context: wgpu_context.clone(),
+            sprite_atlas: gpu.new_atlas(),
+            gpu,
             renderer: OnceCell::new(),
-            sprite_atlas: Arc::new(WgpuAtlas::new(wgpu_context.clone())),
             event_loop_proxy,
             state: CrossWindowState::default(),
         }))
@@ -124,15 +122,11 @@ impl CrossWindow {
         }
 
         if initial_size.width > 0 && initial_size.height > 0 {
-            let mut renderer = WgpuRenderer::new(
-                self.0.wgpu_context.clone(),
-                self.window(),
-                self.0.sprite_atlas.clone(),
-                initial_size.width,
-                initial_size.height,
-                4,
-            )
-            .expect("Failed to create renderer");
+            let mut renderer = self
+                .0
+                .gpu
+                .new_renderer(self.window(), &self.0.sprite_atlas, initial_size.width, initial_size.height)
+                .expect("Failed to create renderer");
 
             // Configure the wgpu surface immediately so that any
             // `get_current_texture()` call that arrives before the first OS
@@ -521,13 +515,15 @@ impl PlatformWindow for CrossWindow {
         self.window().set_ime_allowed(ime_allowed);
     }
 
+    #[cfg(feature = "wgpu")]
     fn create_wgpu_surface(
         &self,
         width: u32,
         height: u32,
         format: wgpu::TextureFormat,
-    ) -> Option<WgpuSurfaceHandle> {
-        let ctx = &self.0.wgpu_context;
+    ) -> Option<crate::WgpuSurfaceHandle> {
+        #[allow(irrefutable_let_patterns)]
+        let GpuContext::Wgpu(ctx) = &self.0.gpu else { return None };
         let registry = ctx.surface_registry.clone();
         let surface_id = registry.create(&ctx.device, width, height, format);
 
@@ -543,7 +539,7 @@ impl PlatformWindow for CrossWindow {
 
         // capture winit window Arc so handle can request redraw directly
         let winit_arc = self.0.winit_window.get().cloned();
-        Some(WgpuSurfaceHandle::new(
+        Some(crate::WgpuSurfaceHandle::new(
             ctx.device.clone(),
             ctx.queue.clone(),
             surface_id,
@@ -558,7 +554,7 @@ impl PlatformWindow for CrossWindow {
     }
 
     fn sprite_atlas(&self) -> std::sync::Arc<dyn crate::PlatformAtlas> {
-        self.0.sprite_atlas.clone()
+        self.0.sprite_atlas.as_platform()
     }
 
     #[cfg(feature = "flamegraph")]

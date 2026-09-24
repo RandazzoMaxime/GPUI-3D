@@ -6238,7 +6238,7 @@ impl Window {
         &mut self,
         bounds: Bounds<Pixels>,
         corner_radii: Corners<Pixels>,
-        surface_id: crate::platform::cross::surface_registry::SurfaceId,
+        surface_id: crate::SurfaceId,
     ) {
         use crate::{PaintSurface, scene::SurfaceContent};
 
@@ -6262,6 +6262,7 @@ impl Window {
     /// The returned handle provides `device()` / `queue()` access and a
     /// `back_buffer_view()` you can render into, then call `present()` to
     /// swap buffers and trigger a re-composite (no layout/paint cycle).
+    #[cfg(feature = "wgpu")]
     pub fn create_wgpu_surface(
         &self,
         width: u32,

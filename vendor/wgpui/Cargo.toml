@@ -18,7 +18,10 @@ categories = ["gui"]
 autoexamples = false
 
 [features]
-default = ["font-kit"]
+# GPUI-3D : le renderer est choisi à l'exécution parmi les backends compilés
+# (`RendererBackend`). `wgpu` est le backend historique ; sans lui, aucune dépendance wgpu.
+default = ["font-kit", "wgpu"]
+wgpu = ["dep:wgpu", "dep:ash", "dep:windows-core"]
 test-support = [
     "leak-detection",
     "collections/test-support",
@@ -27,7 +30,7 @@ test-support = [
 ]
 inspector = ["gpui_macros/inspector"]
     leak-detection = ["backtrace"]
-    flamegraph = ["dep:bincode"]
+    flamegraph = ["dep:bincode", "wgpu"]
     profile-tracy = ["profiling/profile-with-tracy"]
 
 [lib]
@@ -101,7 +104,7 @@ accesskit = "0.25"
 [target.'cfg(target_family = "wasm")'.dependencies]
 getrandom = { version = "0.4", features = ["wasm_js"] }
 winit = "0.30.12"
-wgpu = { version = "30", default-features = false, features = [
+wgpu = { version = "30", optional = true, default-features = false, features = [
     "web",
     "webgpu",
     "wgsl",
@@ -120,7 +123,7 @@ web-time = "1.0"
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 device_query = "2.1"
 winit = "0.30.12"
-wgpu = { version = "30", default-features = false, features = [
+wgpu = { version = "30", optional = true, default-features = false, features = [
     "web",
     "webgpu",
     "dx12",
@@ -132,7 +135,7 @@ wgpu = { version = "30", default-features = false, features = [
     "fragile-send-sync-non-atomic-wasm",
 ] }
 # GPUI-3D : poignées Vulkan brutes exposées aux moteurs natifs (même version que wgpu-hal 30).
-ash = "0.38"
+ash = { version = "0.38", optional = true }
 priority-threadpool = { git = "https://github.com/tristanpoland/priority-threadpool", rev = "bb1ab91" }
 arboard = "3.6.1"
 font-kit = { version = "0.14.3", optional = true }
@@ -162,7 +165,7 @@ objc2-foundation = { version = "0.2", features = ["NSData"] }
 
 [target.'cfg(windows)'.dependencies]
 # GPUI-3D : poignées D3D12 brutes (`Interface::as_raw`), même version que wgpu-hal 30.
-windows-core = "0.62"
+windows-core = { version = "0.62", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 x11-dl = "2.21.0"
@@ -240,18 +243,22 @@ path = "examples/learn/emoji_display.rs"
 [[example]]
 name = "wgpu_surface"
 path = "examples/learn/wgpu_surface.rs"
+required-features = ["wgpu"]
 
 [[example]]
 name = "wgpu_surface_basic"
 path = "examples/learn/wgpu_surface_basic.rs"
+required-features = ["wgpu"]
 
 [[example]]
 name = "wgpu_surface_quad"
 path = "examples/learn/wgpu_surface_quad.rs"
+required-features = ["wgpu"]
 
 [[example]]
 name = "wgpu_surface_stress"
 path = "examples/learn/wgpu_surface_stress.rs"
+required-features = ["wgpu"]
 
 [[example]]
 name = "mouse_events"

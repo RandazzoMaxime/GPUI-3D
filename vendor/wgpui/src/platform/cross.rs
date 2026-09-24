@@ -1,12 +1,17 @@
+#[cfg(feature = "wgpu")]
 pub mod atlas;
 pub mod dispatcher;
+pub mod gpu;
 pub mod keyboard;
 pub mod platform;
+#[cfg(feature = "wgpu")]
 pub mod render_context;
+#[cfg(feature = "wgpu")]
 pub mod renderer;
 pub mod resize_detector;
 pub mod slab;
 pub mod slab_gpu;
+#[cfg(feature = "wgpu")]
 pub mod surface_registry;
 pub mod text_system;
 pub mod window;

@@ -48,10 +48,9 @@ use crate::{
     GlobalColors, InvalidationRequest, KeyBinding, KeyContext, Keymap, Keystroke, LayoutId, Menu,
     MenuItem, OwnedMenu, PathPromptOptions, Pixels, Platform, PlatformDisplay, PlatformKeyboardLayout,
     PlatformKeyboardMapper, Point, Priority, PromptBuilder, PromptButton, PromptHandle,
-    PromptLevel, Render, RenderImage, RenderablePromptHandle, Reservation, SharedString,
+    PromptLevel, Render, RenderImage, RenderablePromptHandle, RendererBackend, Reservation, SharedString,
     SubscriberSet, Subscription, SvgRenderer, Task, TextSystem, Window, WindowAppearance,
     WindowHandle, WindowId, WindowInvalidator, current_platform, hash, init_app_menus,
-    platform::cross::render_context::WgpuOptions,
 };
 
 mod async_context;
@@ -138,12 +137,22 @@ impl Application {
     /// Builds an app with the given asset source.
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
-        Self::with_wgpu_options(WgpuOptions::default())
+        Self::build(RendererBackend::compiled_default())
     }
 
     /// Build an app with custom WGPU options, including additional
     /// features to request when creating the GPU device.
-    pub fn with_wgpu_options(options: WgpuOptions) -> Self {
+    #[cfg(feature = "wgpu")]
+    pub fn with_wgpu_options(options: crate::WgpuOptions) -> Self {
+        Self::with_renderer(RendererBackend::Wgpu(options))
+    }
+
+    /// GPUI-3D : build an app whose UI renders through the given backend.
+    pub fn with_renderer(backend: RendererBackend) -> Self {
+        Self::build(Some(backend))
+    }
+
+    fn build(backend: Option<RendererBackend>) -> Self {
         #[cfg(any(test, feature = "test-support"))]
         log::info!("GPUI was compiled in test mode");
 
@@ -158,7 +167,7 @@ impl Application {
             }
         };
         Self(App::new_app(
-            current_platform(false, options),
+            current_platform(false, backend),
             Arc::new(()),
             http_client,
         ))
@@ -179,7 +188,7 @@ impl Application {
             }
         };
         Self(App::new_app(
-            current_platform(true, WgpuOptions::default()),
+            current_platform(true, None),
             Arc::new(()),
             http_client,
         ))

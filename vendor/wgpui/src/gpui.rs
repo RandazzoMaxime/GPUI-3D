@@ -122,11 +122,12 @@ pub use instance::{InstanceKey, ReconcileKey};
 pub use layer::{LayerId, LayerKey, LayerPolicy, LayerTransform};
 pub use path_builder::*;
 pub use platform::*;
+pub use platform::cross::gpu::RendererBackend;
+#[cfg(feature = "wgpu")]
 pub use platform::cross::render_context::{AdapterSelector, WgpuOptions};
-pub use platform::cross::surface_registry::SurfaceId;
 // Compat (voir compat.rs) : partage du device wgpu du renderer
 // avec le globe et le calcul de l'hôte.
-#[cfg(not(target_family = "wasm"))]
+#[cfg(all(not(target_family = "wasm"), feature = "wgpu"))]
 pub use platform::cross::render_context::{enumerate_qualifying_adapters, host_device};
 #[cfg(feature = "flamegraph")]
 pub use flamegraph::*;

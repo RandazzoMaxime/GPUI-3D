@@ -145,7 +145,7 @@ impl Renderer for WgpuCube {
 }
 
 fn main() {
-    // Tous les backends wgpu ; `WGPU_BACKEND=vulkan|metal|dx12|gl` en force un.
-    let backends = Backends::from_env().unwrap_or(Backends::all());
+    // Tous les backends wgpu ; `WGPU_BACKEND=vulkan|metal|dx12|gl` en force un (vide = tous).
+    let backends = Backends::from_env().filter(|b| !b.is_empty()).unwrap_or(Backends::all());
     gpui3d_shell::run::<WgpuCube>("wgpu", backends);
 }

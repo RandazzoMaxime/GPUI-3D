@@ -714,6 +714,8 @@ pub(crate) fn instance_stride(kind: SlabKind) -> u64 {
 const INITIAL_KIND_BUFFER_ELEMENTS: u64 = 1024;
 const INITIAL_TRANSFORM_SLOTS: u32 = 128;
 
+// GPUI-3D : seule partie wgpu du module ; le reste (registre, transforms) est neutre.
+#[cfg(feature = "wgpu")]
 pub(crate) struct SlabGpuBuffers {
     kinds: [wgpu::Buffer; SlabKind::COUNT],
     transforms: wgpu::Buffer,
@@ -721,6 +723,7 @@ pub(crate) struct SlabGpuBuffers {
     pub transform_slot_stride: u64,
 }
 
+#[cfg(feature = "wgpu")]
 impl SlabGpuBuffers {
     pub fn new(device: &wgpu::Device, min_uniform_offset_alignment: u32) -> Self {
         let transform_slot_stride = (min_uniform_offset_alignment as u64)
