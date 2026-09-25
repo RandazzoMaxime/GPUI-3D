@@ -3,6 +3,13 @@ resolver = "2"
 members = ["shell", "GPUI-WGPU", "GPUI-METAL", "GPUI-VULKAN", "GPUI-DX12", "GPUI-OPENGL"]
 exclude = ["vendor/wgpui", "vendor/priority-threadpool"]
 
+# Kit à copier, pas des crates à publier.
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
 [workspace.dependencies]
 # Sans features : chaque variante choisit son backend d'UI via le shell (`wgpu` ou natif).
 gpui = { package = "gpui-ce", path = "vendor/wgpui", default-features = false, features = ["font-kit"] }

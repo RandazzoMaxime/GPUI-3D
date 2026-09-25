@@ -1,144 +1,128 @@
 # GPUI-3D
 
-Kit de démarrage : une app **GPUI** (chrome blanc) avec un **moteur 3D** derrière,
-un seul device GPU partagé entre l'UI
-et la 3D, zéro copie, et le chrome n'est **jamais** redessiné pour une trame 3D.
+**A starter kit for desktop apps that pair a [GPUI](https://www.gpui.rs/) user interface with
+a real-time 3D engine — on one GPU device, with zero copies, and with the UI chrome never
+redrawn for a 3D frame.**
 
-Démo : un cube qui tourne, caméra orbitale (glisser = orbite, molette = zoom),
-compteur FPS.
+Pick how the UI is rendered:
 
-| Dossier | Moteur 3D | Renderer de l'UI | Backends |
-|---|---|---|---|
-| [`GPUI-WGPU`](GPUI-WGPU/src/main.rs) | wgpu | wgpu | tous ceux de wgpu : Metal, Vulkan, DX12, GL (`WGPU_BACKEND=…`) |
-| [`GPUI-METAL`](GPUI-METAL/src/metal_cube.rs) | Metal natif (objc2-metal, MSL) | **Metal natif** — full natif, sans wgpu | Metal — macOS |
-| [`GPUI-VULKAN`](GPUI-VULKAN/src/main.rs) | Vulkan natif (ash, GLSL → SPIR-V) | **Vulkan natif** — full natif, sans wgpu | Vulkan 1.3 — Windows, Linux ; macOS si MoltenVK expose Vulkan 1.3 (non vérifié) |
-| [`GPUI-DX12`](GPUI-DX12/src/dx12_cube.rs) | D3D12 natif (windows-rs, HLSL → DXBC) | **D3D12 natif** — full natif, sans wgpu | D3D12 — Windows |
-| [`GPUI-OPENGL`](GPUI-OPENGL/src/opengl_cube.rs) | OpenGL 4.5 natif (WGL, GLSL) | **OpenGL natif** — full natif, sans wgpu | OpenGL 4.5 core — Windows |
+- **wgpu** — the UI renders through wgpu, which abstracts the graphics API; your 3D engine
+  renders with wgpu or with the native API behind it.
+- **Full native** — the UI renderer *and* your 3D engine both talk to the native API
+  directly: Vulkan, Direct3D 12, OpenGL or Metal. wgpu is not in the binary at all.
 
-Deux familles de variantes :
+*Version française : [README.fr.md](README.fr.md).*
 
-- **wgpu** : l'UI rend par wgpu, qui gère l'abstraction des API ; le moteur 3D rend
-  en wgpu ou dans l'API native du device choisi.
-- **full natif** : l'UI de GPUI **et** le moteur 3D rendent tous deux dans l'API
-  native, wgpu absent du binaire (`cargo tree -p gpui-vulkan` n'en contient pas).
-  Disponible pour les quatre API : Vulkan, D3D12, OpenGL et Metal.
+| Vulkan (full native) | Direct3D 12 (full native) | OpenGL (full native) |
+|---|---|---|
+| ![Vulkan](docs/screenshots/vulkan-native.png) | ![D3D12](docs/screenshots/d3d12-native.png) | ![OpenGL](docs/screenshots/opengl-native.png) |
+| **Metal (full native)** | **wgpu** | **UI: backdrop blur, native OpenGL** |
+| ![Metal](docs/screenshots/metal-native.png) | ![wgpu](docs/screenshots/wgpu.png) | ![Blur](docs/screenshots/ui-blur-showcase.png) |
 
-Les moteurs natifs **ne dépendent pas de wgpu** : ils reçoivent de GPUI des
-poignées natives brutes (`MTLDevice`/`MTLCommandQueue`/`MTLTexture`,
-`VkInstance`/`VkDevice`/`VkQueue`/`VkImage`, `ID3D12Device`/`ID3D12CommandQueue`/`ID3D12Resource`)
-et font tout le reste avec l'API — que l'UI tourne sur wgpu ou en natif.
+The demo is a spinning cube behind a white GPUI chrome: drag to orbit, scroll to zoom, with an
+FPS counter.
 
-## Lancer
+## Variants
 
-```bash
-cargo run -p gpui-wgpu
-cargo run -p gpui-metal
-cargo run -p gpui-vulkan
-cargo run -p gpui-dx12
-cargo run -p gpui-opengl
-```
+Each folder is a complete, copyable app. They share the UI shell in [`shell/`](shell/src/lib.rs).
 
-Lancer une variante à la fois (`-p`) : un build de tout le workspace unifie les
-features et compile aussi wgpu dans les variantes full natif (il y reste inutilisé).
+| Folder | 3D engine | UI renderer | Platforms | Verified on |
+|---|---|---|---|---|
+| [`GPUI-WGPU`](GPUI-WGPU/src/main.rs) | wgpu (WGSL) | wgpu | wgpu's backends: Vulkan, Metal, D3D12, GL | Windows 11 (D3D12, Vulkan), macOS 26 (Metal) |
+| [`GPUI-VULKAN`](GPUI-VULKAN/src/main.rs) | Vulkan (ash, GLSL → SPIR-V) | **Vulkan** | Vulkan 1.3 | Windows 11 |
+| [`GPUI-DX12`](GPUI-DX12/src/dx12_cube.rs) | Direct3D 12 (windows-rs, HLSL) | **Direct3D 12** | Windows 10+ | Windows 11 |
+| [`GPUI-OPENGL`](GPUI-OPENGL/src/opengl_cube.rs) | OpenGL 4.5 core (WGL, GLSL) | **OpenGL 4.5** | Windows (WGL) | Windows 11 |
+| [`GPUI-METAL`](GPUI-METAL/src/metal_cube.rs) | Metal (objc2-metal, MSL) | **Metal** | macOS | macOS 26.5, Apple M1 Max |
 
-`GPUI_D3D12_DEBUG=1` active la couche de debug D3D12 (« Outils graphiques » de Windows)
-et relaie ses avertissements et erreurs sur stderr ; `GPUI_GL_DEBUG=1` fait de même avec
-un contexte OpenGL de debug. Sous macOS, `MTL_DEBUG_LAYER=1` active la validation Metal.
+Native engines never depend on wgpu: GPUI hands them raw handles (`VkDevice`/`VkImage`,
+`ID3D12Device`/`ID3D12Resource`, a shared `HGLRC` and texture name, `MTLDevice`/`MTLTexture`)
+and they do everything else with the API itself.
 
-`GPUI_FRAME_DUMP=trame.bmp` écrit en BMP chaque trame présentée, relue par le GPU (wgpu et
-Metal) : capture d'écran sans l'écran, par exemple sur un Mac piloté en SSH.
+## Quickstart
 
-`GPUI-OPENGL` exige un pilote OpenGL 4.5 core (WGL) : sinon, échec explicite.
-
-`GPUI3D_TIME=1.3` fige la scène (même image pour tous les moteurs, pour les comparer
-pixel à pixel). Sur un poste iGPU + dGPU, le GPU discret est choisi à backend égal ;
-l'adaptateur retenu s'affiche au lancement.
-
-`WGPU_BACKEND=vulkan cargo run -p gpui-wgpu` force un backend wgpu (par défaut :
-Metal sur macOS). Le bandeau affiche le moteur et l'API réelle du device.
-
-Vulkan sur macOS exige MoltenVK et le chargeur, que `dlopen` ne trouve pas seul
-dans Homebrew :
+Requirements: a stable Rust toolchain (edition 2024) and a GPU driver for the API you pick.
+macOS needs the Xcode command line tools.
 
 ```bash
-brew install molten-vk vulkan-loader
-DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib cargo run -p gpui-vulkan
+git clone <this repository> && cd GPUI-3D
+cargo run -p gpui-vulkan     # Windows (Linux: untested)
+cargo run -p gpui-dx12       # Windows
+cargo run -p gpui-opengl     # Windows
+cargo run -p gpui-metal      # macOS
+cargo run -p gpui-wgpu       # anywhere wgpu runs
 ```
 
-Le premier lancement après l'installation peut prendre ~30 s (vérification de
-signature de `libMoltenVK.dylib` par macOS), les suivants sont immédiats.
+Build one variant at a time (`-p`): building the whole workspace unifies Cargo features and
+also compiles wgpu into the full-native variants, where it then sits unused.
 
-## Architecture
+To start your own app, copy the folder of the variant you want, replace `CUBE_*` and the
+shader, and keep the `Renderer` implementation shape: `new(surface)` creates GPU resources,
+`render(surface, scene)` records one frame and publishes it. The UI lives in
+`shell/src/lib.rs` (`Shell::render`).
+
+## How it works
+
+1. **One device.** GPUI creates the GPU device for the UI; the 3D engine renders on that same
+   device (and queue) through native handles.
+2. **A triple-buffered surface** (`window.create_surface(w, h, SurfaceFormat)`, displayed by
+   `gpu_surface(handle)`): the engine renders into the back buffer while the compositor samples
+   the displayed one. No readback, no copy.
+3. **A dedicated render thread** paced on the display refresh rate with absolute deadlines,
+   holding `submit_guard()` while it encodes and submits.
+4. **Publishing without redrawing the chrome:** `swap_buffers()` then `request_window_redraw()`
+   — the window recomposes its cached scene. Never `cx.notify()` per frame: it forces a full UI
+   redraw.
+5. **Gestures do not notify:** the camera lives in an `Arc<Mutex<_>>` written by mouse handlers
+   and read by the render thread.
+
+Under the hood, the UI renderer is a single generic renderer over a small internal GPU layer
+(`vendor/wgpui/src/platform/cross/hal.rs`) with five implementations — wgpu, Vulkan, Direct3D 12,
+OpenGL, Metal. The UI's WGSL shaders are translated at build time by
+[naga](https://github.com/gfx-rs/wgpu/tree/trunk/naga) (SPIR-V, HLSL → DXBC, GLSL 4.50, MSL).
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the layer, the per-API synchronization
+contracts and how the backends were verified.
+
+## Environment variables
+
+| Variable | Effect |
+|---|---|
+| `GPUI3D_TIME=1.3` | Freezes the scene, for pixel comparisons between variants. |
+| `WGPU_BACKEND=vulkan\|dx12\|metal\|gl` | Forces a wgpu backend in `GPUI-WGPU`. |
+| `GPUI_RENDERER=wgpu\|vulkan\|dx12\|opengl\|metal` | Picks the UI backend in the fork's own examples (`vendor/wgpui/examples`). |
+| `GPUI_D3D12_DEBUG=1` | Enables the D3D12 debug layer (Windows "Graphics Tools") and relays its messages to stderr. |
+| `GPUI_GL_DEBUG=1` | Creates a debug OpenGL context and relays driver errors to stderr. |
+| `MTL_DEBUG_LAYER=1` | Enables Metal API validation (macOS). |
+| `GPUI_FRAME_DUMP=frame.bmp` | Writes every presented frame to a BMP, read back by the GPU (wgpu and Metal) — a screenshot without screen access, e.g. over SSH. |
+
+## Known limitations
+
+- **OpenGL** is implemented with WGL, so Windows only (no GLX/EGL yet).
+- **Vulkan full native** requires Vulkan 1.3 (dynamic rendering). MoltenVK on macOS is untested.
+- **Linux** has not been tested with any variant.
+- **Metal:** interactive window resizing has not been tested (the Mac was driven over SSH).
+- **Backdrop blur:** D3D12, OpenGL and Metal windows are opaque, while Vulkan uses premultiplied
+  alpha, so blurred backdrops differ slightly between these APIs — exactly as they do with wgpu.
+- The fork's test suite has two pre-existing flaky behaviours (an order-dependent profiler test,
+  and GPU tests that occasionally stall when many headless devices are created in parallel).
+
+## Repository layout
 
 ```
-shell/            chrome GPUI + caméra + fil de rendu, commun aux moteurs ; feature `wgpu` ou `vulkan` = renderer de l'UI
-GPUI-WGPU/        moteur wgpu (WGSL)
-GPUI-METAL/       moteur Metal natif (MSL)
-GPUI-VULKAN/      moteur Vulkan natif (GLSL compilé en SPIR-V par build.rs)
-GPUI-DX12/        moteur D3D12 natif (HLSL compilé par d3dcompiler_47 au démarrage)
-GPUI-OPENGL/      moteur OpenGL natif (WGL, bindings générés par build.rs) + publication D3D12
-vendor/wgpui      fork GPUI (gpui-ce / WGPUI) + patchs « GPUI-3D »
-vendor/priority-threadpool   copie corrigée (timers GPUI)
+shell/              GPUI chrome, camera and render thread, shared by all variants
+GPUI-WGPU/          wgpu engine (WGSL)
+GPUI-VULKAN/        native Vulkan engine (GLSL compiled to SPIR-V by build.rs)
+GPUI-DX12/          native Direct3D 12 engine (HLSL compiled at startup)
+GPUI-OPENGL/        native OpenGL engine (WGL, bindings generated by build.rs)
+GPUI-METAL/         native Metal engine (MSL)
+vendor/wgpui/       GPUI fork (WGPUI / gpui-ce) with the "GPUI-3D" patches
+vendor/priority-threadpool/   patched thread pool used by GPUI's timers
+tools/bench/        pixel-comparison scripts used to verify the backends
+docs/               architecture notes and screenshots
 ```
 
-La recette :
+## License
 
-1. **Un device.** WGPUI crée le device de l'UI ; `run::<Moteur>(label, ui)` choisit
-   son renderer (`Ui::Wgpu(backends)` ou `Ui::Vulkan`). Le moteur rend sur ce même device.
-2. **Une surface triple-buffer** (`window.create_surface`, affichée par
-   `gpu_surface(handle)`) : le moteur rend
-   dans le tampon arrière, le compositeur échantillonne le tampon affiché. Pas de
-   readback, pas de copie.
-3. **Un fil de rendu dédié** (`shell::spawn_render_thread`), cadencé sur le
-   rafraîchissement de l'écran par échéances absolues, `submit_guard` tenu pendant
-   l'encodage et la soumission.
-4. **Publication sans redessin du chrome** : `present_synced_silent` (wgpu) ou
-   `swap_buffers` (natif), puis `request_window_redraw` ⇒ la fenêtre recompose la
-   scène en cache. Jamais `present_synced` ni `cx.notify()` par trame : les deux
-   forcent un dessin complet de l'UI.
-5. **Les gestes ne notifient pas** : la caméra est un `Arc<Mutex<_>>` écrit par les
-   handlers souris et relu par le fil de rendu.
-
-### Contrat natif (patchs `GPUI-3D` du fork)
-
-`SurfaceHandle`, commun à tous les renderers de l'UI, expose `native_device()`,
-`native_back_buffer()` et `native_queue_lock()`
-([`vendor/wgpui/src/elements/gpu_surface.rs`](vendor/wgpui/src/elements/gpu_surface.rs)).
-Sur une UI wgpu, `handle.as_wgpu()` donne en plus l'accès wgpu (`WgpuSurfaceHandle`).
-Le renderer de l'UI passe par une couche interne (`platform/cross/hal.rs`) dont wgpu
-et Vulkan natif sont deux implémentations, choisies par `RendererBackend`
-(ou `GPUI_RENDERER=wgpu|vulkan|dx12|opengl|metal` pour les exemples du fork). Les shaders
-WGSL de l'UI sont traduits au build par naga (SPIR-V pour Vulkan, HLSL compilé en DXBC par
-FXC pour D3D12, GLSL 4.50 pour OpenGL, MSL pour Metal). Les fenêtres D3D12 et OpenGL sont opaques, là où Vulkan
-prend l'alpha prémultiplié : les flous d'arrière-plan diffèrent donc légèrement entre ces
-API, exactement comme avec wgpu sur chacune d'elles.
-
-- **Metal** : même `MTLCommandQueue` que le compositeur ⇒ ordre garanti, textures
-  « tracked » ⇒ aucun fence. On commit puis `swap_buffers()`, que l'UI tourne sur wgpu ou
-  en Metal natif.
-- **Vulkan** : `VkQueue` exige une synchronisation externe ⇒ tout `vkQueueSubmit`
-  se fait sous `native_queue_lock()` (le compositeur le prend aussi). Le tampon
-  arrive et repart en `SHADER_READ_ONLY_OPTIMAL` ; les dépendances de subpass
-  d'entrée/sortie portent la synchronisation avec le compositeur.
-- **D3D12** : même `ID3D12CommandQueue` que le compositeur ⇒ ordre garanti ; une queue
-  D3D12 est thread-safe, pas de verrou. Le tampon arrive et repart en
-  `PIXEL_SHADER_RESOURCE | NON_PIXEL_SHADER_RESOURCE` (l'état `RESOURCE` de wgpu).
-- **OpenGL** : l'UI tourne en OpenGL natif. Le moteur crée son contexte en partage
-  d'objets avec celui de l'UI (`NativeDevice::OpenGl`, sous `native_queue_lock()`), rend
-  directement dans la texture de surface (ligne 0 en haut :
-  `glClipControl(UPPER_LEFT, ZERO_TO_ONE)`) et termine par `glFinish` avant
-  `swap_buffers()` ; deux contextes n'ordonnent pas leurs commandes entre eux.
-- Les tampons sont initialisés à leur création (sinon wgpu les jugerait vierges et
-  les effacerait avant de les échantillonner).
-- `adapter_selector` est honoré aussi sur macOS (choisir Metal ou Vulkan/MoltenVK) ;
-  sans sélecteur, Metal est préféré à MoltenVK.
-- `PRIMITIVE_INDEX` n'est plus exigé : aucun shader WGPUI ne l'utilise et MoltenVK
-  ne l'expose pas.
-
-Chercher `GPUI-3D` dans `vendor/wgpui` pour rebaser ces patchs.
-
-## Démarrer une app
-
-Copier le dossier du moteur voulu, remplacer `CUBE_*` et le shader, garder le
-`Renderer` : `new(surface)` crée les ressources, `render(surface, scene)` encode une
-trame et la publie. L'UI se compose dans `shell/src/lib.rs` (`Shell::render`).
+Original GPUI-3D code is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE),
+at your option. Vendored third-party code keeps its own license — see [NOTICE](NOTICE):
+`vendor/wgpui` is Apache-2.0 (derived from Zed's GPUI), `vendor/priority-threadpool` is MIT,
+and the bundled fonts are under the SIL Open Font License.

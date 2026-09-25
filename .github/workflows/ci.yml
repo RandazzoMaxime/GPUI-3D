@@ -1,0 +1,30 @@
+# Build de chaque variante sur son système. Les runners hébergés n'ont pas de GPU :
+# les rendus se vérifient à la main avec tools/bench (voir docs/ARCHITECTURE.md).
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, package: gpui-wgpu }
+          - { os: windows-latest, package: gpui-vulkan }
+          - { os: windows-latest, package: gpui-dx12 }
+          - { os: windows-latest, package: gpui-opengl }
+          - { os: macos-latest, package: gpui-wgpu }
+          - { os: macos-latest, package: gpui-metal }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.package }}
+      - run: cargo build -p ${{ matrix.package }} --locked
+      - if: matrix.package == 'gpui-wgpu'
+        run: cargo test -p gpui3d-shell --features wgpu --locked

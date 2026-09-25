@@ -1,8 +1,7 @@
 //! Chrome GPUI + fil de rendu 3D, partagés par tous les moteurs (wgpu, Metal, Vulkan, D3D12, OpenGL).
-//! Le moteur rend sur
-//! son propre fil dans une surface triple-buffer du device de l'UI, publie par
-//! `swap_buffers` + `request_window_redraw` ⇒ la fenêtre recompose la scène en
-//! cache, le chrome n'est jamais redessiné pour une trame 3D.
+//! Le moteur rend sur son propre fil dans une surface triple-buffer du device de l'UI,
+//! puis publie par `swap_buffers` + `request_window_redraw` ⇒ la fenêtre recompose la
+//! scène en cache, le chrome n'est jamais redessiné pour une trame 3D.
 //!
 //! Le backend de l'UI se choisit par [`Ui`] : wgpu (feature `wgpu`) ou natif (features
 //! `vulkan`, `dx12`, `opengl`, `metal`, sans wgpu dans le binaire).
@@ -24,7 +23,7 @@ pub use gpui::WgpuSurfaceHandle;
 #[cfg(feature = "wgpu")]
 pub use wgpu::Backends;
 
-/// sRGB (Metal : `BGRA8Unorm_sRGB`, Vulkan : `B8G8R8A8_SRGB`).
+/// Tampons sRGB (Metal : `BGRA8Unorm_sRGB`, Vulkan : `B8G8R8A8_SRGB`, D3D12 : `B8G8R8A8_UNORM_SRGB`).
 pub const SURFACE_FORMAT: SurfaceFormat = SurfaceFormat::Bgra8UnormSrgb;
 
 /// Backend du renderer de l'UI, donc du device partagé avec le moteur 3D.

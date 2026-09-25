@@ -1,7 +1,9 @@
 [package]
 name = "gpui3d-shell"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
 
 [features]
 # Backend du renderer de l'UI : wgpu (abstraction multi-API) ou natif (Vulkan, D3D12, OpenGL, Metal).

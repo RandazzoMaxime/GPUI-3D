@@ -1,0 +1,45 @@
+GPUI-3D
+Copyright (c) 2026 Maxime Randazzo and the GPUI-3D contributors
+
+Original GPUI-3D code (everything outside vendor/) is licensed under either
+of MIT (LICENSE-MIT) or Apache-2.0 (LICENSE-APACHE), at your option.
+
+This repository also contains third-party code, each part under its own
+license:
+
+vendor/wgpui/
+  A fork of WGPUI (https://github.com/Far-Beyond-Pulsar/wgpui), itself a fork
+  of gpui-ce (https://github.com/gpui-ce/gpui-ce), a community fork of GPUI
+  from the Zed editor (https://github.com/zed-industries/zed).
+  Copyright 2022 - 2025 Zed Industries, Inc. and contributors.
+  Licensed under the Apache License, Version 2.0 (vendor/wgpui/LICENSE-APACHE).
+
+  Modified by the GPUI-3D contributors. Changes are marked with "GPUI-3D" in
+  comments; the main ones are:
+  - the UI renderer made generic over an internal GPU layer
+    (src/platform/cross/hal.rs), with native Vulkan, Direct3D 12, OpenGL and
+    Metal implementations next to wgpu (src/platform/cross/hal/);
+  - build-time translation of the UI's WGSL shaders with naga (build.rs);
+  - a backend-neutral external-rendering surface with native handles
+    (src/elements/gpu_surface.rs) and the renderer backend selection
+    (src/platform/cross/gpu.rs);
+  - the GPUI_FRAME_DUMP frame capture used to verify the backends.
+
+vendor/priority-threadpool/
+  priority-threadpool (https://github.com/tristanpoland/priority-threadpool).
+  Copyright (c) 2026 Maxine DeAndrade. MIT License
+  (vendor/priority-threadpool/LICENSE). Modified by the GPUI-3D contributors
+  (fix for a lost-job race in fetch_add/push).
+
+vendor/priority-threadpool/crates/lockfree/
+  lockfree (https://gitlab.com/bzim/lockfree/).
+  Copyright (c) 2018 brunoczim. MIT License
+  (vendor/priority-threadpool/crates/lockfree/LICENSE).
+
+vendor/wgpui/assets/fonts/ibm-plex-sans/
+  IBM Plex Sans. Copyright 2017 IBM Corp. SIL Open Font License 1.1
+  (vendor/wgpui/assets/fonts/ibm-plex-sans/license.txt).
+
+vendor/wgpui/assets/fonts/lilex/
+  Lilex. Copyright 2019 The Lilex Project Authors. SIL Open Font License 1.1
+  (vendor/wgpui/assets/fonts/lilex/OFL.txt).

@@ -1,5 +1,5 @@
 //! Moteur 3D wgpu sur le `wgpu::Device` de GPUI : rendu direct dans le back buffer
-//! de la `WgpuSurface`, zéro copie.
+//! de la surface, zéro copie.
 
 use gpui3d_shell::{Backends, CLEAR_COLOR, CUBE_INDICES, CUBE_VERTICES, Renderer, Scene, Surface, Ui, WgpuSurfaceHandle};
 use wgpu::util::DeviceExt;

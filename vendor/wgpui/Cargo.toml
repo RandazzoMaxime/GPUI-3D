@@ -9,7 +9,8 @@ authors = [
 ]
 description = "A community fork of Zed's GPU-accelerated UI framework"
 repository = "https://github.com/gpui-ce/gpui-ce"
-publish = true
+# GPUI-3D : fork modifié, jamais publié sous le nom de gpui-ce.
+publish = false
 license = "Apache-2.0"
 homepage = "https://gpui-ce.github.io/"
 readme = "README.md"

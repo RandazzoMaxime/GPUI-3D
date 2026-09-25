@@ -1,7 +1,9 @@
 [package]
 name = "gpui-dx12"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
 
 [dependencies]
 # Full natif : l'UI de GPUI rend elle aussi en D3D12 (windows-rs), sans wgpu.
