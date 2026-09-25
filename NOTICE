@@ -1,8 +1,8 @@
 GPUI-3D
 Copyright (c) 2026 Maxime Randazzo and the GPUI-3D contributors
 
-Original GPUI-3D code (everything outside vendor/) is licensed under either
-of MIT (LICENSE-MIT) or Apache-2.0 (LICENSE-APACHE), at your option.
+Original GPUI-3D code (everything outside vendor/) is licensed under 0BSD
+(LICENSE). Credit is welcome and never required.
 
 This repository also contains third-party code, each part under its own
 license:

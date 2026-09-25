@@ -78,7 +78,15 @@ verified — in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - Backdrop blurs look slightly different between Vulkan and the other APIs (opaque vs.
   premultiplied window alpha) — the same difference you get with wgpu.
 
+## Contributing
+
+Fork the repo, work on your fork, open a pull request against `main`. Do not
+create branches, push, or merge on this repository — see [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## License
 
-Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.
-Third-party code in `vendor/` keeps its own license — see [NOTICE](NOTICE).
+Original GPUI-3D code is [0BSD](LICENSE): reuse it for anything. A credit is
+welcome, never required.
+
+Third-party code in `vendor/` keeps its own license (`vendor/wgpui` is
+Apache-2.0) — see [NOTICE](NOTICE).
