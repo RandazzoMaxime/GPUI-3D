@@ -17,8 +17,8 @@
 //!    [`crate::UiTreeCapture`] value already sitting in the calling process
 //!    (typically just taken from [`crate::take_completed_deep_capture`]/
 //!    [`crate::take_completed_ui_tree_capture`]), not a file loaded from
-//!    disk days later. That is also what an in-app viewer (phase 7,
-//!    `WGPUI-Component`) primarily wants: scrub what was just captured.
+//!    disk days later. That is also what an in-app viewer primarily wants:
+//!    scrub what was just captured.
 //! 2. **In-crate module behind `feature = "flamegraph"`, not a separate
 //!    crate.** The viewer lives in a different repo but already depends on
 //!    `gpui` directly, so a gated module costs it nothing extra to consume,

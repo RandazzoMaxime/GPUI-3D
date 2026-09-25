@@ -1,5 +1,5 @@
 //! Compatibilité : API d'un fork gpui antérieur, attendues par des crates qui
-//! en dépendent (gpui-component notamment). Elles sont rétablies ici sur le
+//! en dépendent. Elles sont rétablies ici sur le
 //! WGPUI amont (Far-Beyond-Pulsar/WGPUI) sous forme minimale ; à reporter lors
 //! d'une mise à jour amont. Voir aussi les blocs « Compat » dans
 //! `elements/div.rs`, `styled.rs` et `text_system/line.rs`, et les re-exports

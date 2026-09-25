@@ -9719,8 +9719,8 @@ mod test {
     /// terminates only because the view stops notifying — a view that notifies
     /// unconditionally from its own render or paint now redraws forever.
     ///
-    /// This is why `TextInput`'s paint-time "record what was painted" update in
-    /// `wgpui-component` had to become conditional; it notified on every paint.
+    /// This is why a paint-time "record what was painted" update
+    /// had to become conditional; it notified on every paint.
     #[gpui::test]
     fn each_notifying_draw_begets_exactly_one_more(cx: &mut TestAppContext) {
         for chain in [1usize, 2, 5] {
