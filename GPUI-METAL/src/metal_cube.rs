@@ -1,4 +1,5 @@
-//! Moteur 3D en Metal natif, sans wgpu : GPUI fournit son `MTLDevice`, sa
+//! Full natif : l'UI de GPUI et ce moteur 3D rendent tous deux en Metal, sans wgpu dans
+//! le binaire. GPUI fournit son `MTLDevice`, sa
 //! `MTLCommandQueue` et la `MTLTexture` du tampon arrière ; tout le reste est l'API
 //! Metal. Même queue que le compositeur ⇒ ordre garanti, textures « tracked » ⇒ Metal
 //! gère le hazard rendu → échantillonnage, sans fence.

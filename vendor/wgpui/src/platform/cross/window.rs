@@ -589,6 +589,15 @@ impl PlatformWindow for CrossWindow {
                 #[cfg(feature = "wgpu")]
                 None,
             )),
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            GpuContext::Metal(context) => Some(self.surface_handle(
+                context,
+                width,
+                height,
+                super::hal::metal::MetalGpu::surface_format(format),
+                #[cfg(feature = "wgpu")]
+                None,
+            )),
             GpuContext::Absent(never) => match *never {},
         }
     }

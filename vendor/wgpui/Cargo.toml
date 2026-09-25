@@ -28,6 +28,8 @@ vulkan = ["dep:ash", "dep:ash-window", "dep:naga"]
 dx12 = ["dep:windows", "dep:windows-core", "dep:naga", "naga/hlsl-out"]
 # GPUI-3D : renderer UI OpenGL 4.5 natif (WGL, glow), sans wgpu. WGSL → GLSL (naga) au build.
 opengl = ["dep:glow", "dep:windows", "dep:naga", "naga/glsl-out"]
+# GPUI-3D : renderer UI Metal natif (objc2-metal), sans wgpu. WGSL → MSL (naga) au build.
+metal = ["dep:objc2-metal", "dep:objc2-quartz-core", "dep:objc2-06", "dep:objc2-foundation-03", "dep:objc2-core-foundation", "dep:naga", "naga/msl-out"]
 test-support = [
     "leak-detection",
     "collections/test-support",
@@ -169,6 +171,12 @@ core-video = "0.5.2"
 objc2 = "0.5"
 objc2-app-kit = { version = "0.2", features = ["NSApplication", "NSImage"] }
 objc2-foundation = { version = "0.2", features = ["NSData"] }
+# GPUI-3D : Metal natif (feature `metal`), même famille objc2 que wgpu-hal 30.
+objc2-06 = { package = "objc2", version = "0.6", optional = true }
+objc2-foundation-03 = { package = "objc2-foundation", version = "0.3", optional = true }
+objc2-metal = { version = "0.3", optional = true }
+objc2-core-foundation = { version = "0.3", optional = true }
+objc2-quartz-core = { version = "0.3", optional = true, features = ["CALayer", "CAMetalLayer", "objc2-metal"] }
 
 [target.'cfg(windows)'.dependencies]
 # GPUI-3D : poignées D3D12 brutes (`Interface::as_raw`), même version que wgpu-hal 30.

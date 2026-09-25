@@ -27,6 +27,8 @@ pub(crate) mod vulkan;
 pub(crate) mod d3d12;
 #[cfg(all(feature = "opengl", windows))]
 pub(crate) mod gl;
+#[cfg(all(feature = "metal", target_os = "macos"))]
+pub(crate) mod metal;
 
 /// Usages d'un buffer (combinables par `|`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -106,8 +108,13 @@ pub(crate) struct LayoutEntry {
 }
 
 pub(crate) enum BindResource<'a, G: Gpu> {
-    /// `size: None` = jusqu'à la fin du buffer.
-    Buffer { buffer: &'a G::Buffer, offset: u64, size: Option<u64> },
+    /// `size: None` = jusqu'à la fin du buffer. Metal lie un buffer par son seul début.
+    Buffer {
+        buffer: &'a G::Buffer,
+        offset: u64,
+        #[cfg_attr(not(any(feature = "wgpu", feature = "vulkan", windows)), allow(dead_code))]
+        size: Option<u64>,
+    },
     Texture(&'a G::TextureView),
     /// D3D12 n'a qu'un sampler, dans son tas.
     Sampler(#[cfg_attr(not(any(feature = "wgpu", feature = "vulkan")), allow(dead_code))] &'a G::Sampler),

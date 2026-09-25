@@ -18,8 +18,10 @@ use super::{
     render_context::{WgpuContext, WgpuOptions},
     renderer::WgpuRenderer,
 };
-#[cfg(any(feature = "vulkan", all(feature = "dx12", windows), all(feature = "opengl", windows)))]
+#[cfg(any(feature = "vulkan", all(feature = "dx12", windows), all(feature = "opengl", windows), all(feature = "metal", target_os = "macos")))]
 use super::{atlas::Atlas, render_context::RenderContext, renderer::Renderer};
+#[cfg(all(feature = "metal", target_os = "macos"))]
+use super::hal::metal::MetalGpu;
 #[cfg(all(feature = "opengl", windows))]
 use super::hal::gl::GlGpu;
 #[cfg(all(feature = "dx12", windows))]
@@ -47,12 +49,15 @@ pub enum RendererBackend {
     /// OpenGL 4.5 core natif (WGL), sans wgpu.
     #[cfg(all(feature = "opengl", windows))]
     OpenGl,
+    /// Metal natif (objc2-metal), sans wgpu.
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    Metal,
     #[doc(hidden)]
     Absent(Infallible),
 }
 
 impl RendererBackend {
-    /// Backend nommé par `GPUI_RENDERER` (`wgpu`, `vulkan`, `dx12`, `opengl`) s'il est compilé, sinon le
+    /// Backend nommé par `GPUI_RENDERER` (`wgpu`, `vulkan`, `dx12`, `opengl`, `metal`) s'il est compilé, sinon le
     /// premier compilé dans l'ordre de déclaration ; `None` si aucun.
     pub fn compiled_default() -> Option<Self> {
         let requested = std::env::var("GPUI_RENDERER").unwrap_or_default();
@@ -68,6 +73,10 @@ impl RendererBackend {
         if requested.eq_ignore_ascii_case("opengl") {
             return Some(Self::OpenGl);
         }
+        #[cfg(all(feature = "metal", target_os = "macos"))]
+        if requested.eq_ignore_ascii_case("metal") {
+            return Some(Self::Metal);
+        }
         #[cfg(feature = "wgpu")]
         if requested.is_empty() || requested.eq_ignore_ascii_case("wgpu") {
             return Some(Self::Wgpu(WgpuOptions::default()));
@@ -82,6 +91,8 @@ impl RendererBackend {
         return Some(Self::Dx12);
         #[cfg(all(feature = "opengl", windows, not(feature = "vulkan"), not(feature = "dx12")))]
         return Some(Self::OpenGl);
+        #[cfg(all(feature = "metal", target_os = "macos", not(feature = "vulkan")))]
+        return Some(Self::Metal);
         #[allow(unreachable_code)]
         None
     }
@@ -98,6 +109,8 @@ pub(crate) enum GpuContext {
     Dx12(Arc<RenderContext<D3d12Gpu>>),
     #[cfg(all(feature = "opengl", windows))]
     OpenGl(Arc<RenderContext<GlGpu>>),
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    Metal(Arc<RenderContext<MetalGpu>>),
     #[allow(dead_code)]
     Absent(Infallible),
 }
@@ -112,6 +125,8 @@ pub(crate) enum WindowAtlas {
     Dx12(Arc<Atlas<D3d12Gpu>>),
     #[cfg(all(feature = "opengl", windows))]
     OpenGl(Arc<Atlas<GlGpu>>),
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    Metal(Arc<Atlas<MetalGpu>>),
     #[allow(dead_code)]
     Absent(Infallible),
 }
@@ -126,6 +141,8 @@ pub(crate) enum WindowRenderer {
     Dx12(Renderer<D3d12Gpu>),
     #[cfg(all(feature = "opengl", windows))]
     OpenGl(Renderer<GlGpu>),
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    Metal(Renderer<MetalGpu>),
     #[allow(dead_code)]
     Absent(Infallible),
 }
@@ -142,6 +159,8 @@ macro_rules! dispatch {
             $enum::Dx12($inner) => $body,
             #[cfg(all(feature = "opengl", windows))]
             $enum::OpenGl($inner) => $body,
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            $enum::Metal($inner) => $body,
             $enum::Absent(never) => match *never {},
         }
     };
@@ -160,6 +179,8 @@ impl GpuContext {
             RendererBackend::Dx12 => Ok(Self::Dx12(Arc::new(RenderContext::with_gpu(D3d12Gpu::new()?)))),
             #[cfg(all(feature = "opengl", windows))]
             RendererBackend::OpenGl => Ok(Self::OpenGl(Arc::new(RenderContext::with_gpu(GlGpu::new()?)))),
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            RendererBackend::Metal => Ok(Self::Metal(Arc::new(RenderContext::with_gpu(MetalGpu::new()?)))),
             RendererBackend::Absent(never) => match *never {},
         }
     }
@@ -174,6 +195,8 @@ impl GpuContext {
             Self::Dx12(context) => WindowAtlas::Dx12(Arc::new(Atlas::new(context.gpu.clone()))),
             #[cfg(all(feature = "opengl", windows))]
             Self::OpenGl(context) => WindowAtlas::OpenGl(Arc::new(Atlas::new(context.gpu.clone()))),
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            Self::Metal(context) => WindowAtlas::Metal(Arc::new(Atlas::new(context.gpu.clone()))),
             Self::Absent(never) => match *never {},
         }
     }
@@ -213,6 +236,14 @@ impl GpuContext {
             )?)),
             #[cfg(all(feature = "opengl", windows))]
             (Self::OpenGl(context), WindowAtlas::OpenGl(atlas)) => Ok(WindowRenderer::OpenGl(Renderer::new(
+                context.clone(),
+                window,
+                atlas.clone(),
+                width,
+                height,
+            )?)),
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            (Self::Metal(context), WindowAtlas::Metal(atlas)) => Ok(WindowRenderer::Metal(Renderer::new(
                 context.clone(),
                 window,
                 atlas.clone(),

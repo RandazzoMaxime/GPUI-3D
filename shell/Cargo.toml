@@ -4,11 +4,12 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-# Backend du renderer de l'UI : wgpu (abstraction multi-API) ou natif (Vulkan, D3D12, OpenGL).
+# Backend du renderer de l'UI : wgpu (abstraction multi-API) ou natif (Vulkan, D3D12, OpenGL, Metal).
 wgpu = ["gpui/wgpu", "dep:wgpu"]
 vulkan = ["gpui/vulkan"]
 dx12 = ["gpui/dx12"]
 opengl = ["gpui/opengl"]
+metal = ["gpui/metal"]
 
 [dependencies]
 gpui.workspace = true

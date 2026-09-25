@@ -10,7 +10,7 @@ compteur FPS.
 | Dossier | Moteur 3D | Renderer de l'UI | Backends |
 |---|---|---|---|
 | [`GPUI-WGPU`](GPUI-WGPU/src/main.rs) | wgpu | wgpu | tous ceux de wgpu : Metal, Vulkan, DX12, GL (`WGPU_BACKEND=…`) |
-| [`GPUI-METAL`](GPUI-METAL/src/metal_cube.rs) | Metal natif (objc2-metal, MSL) | wgpu (Metal) | Metal — macOS |
+| [`GPUI-METAL`](GPUI-METAL/src/metal_cube.rs) | Metal natif (objc2-metal, MSL) | **Metal natif** — full natif, sans wgpu | Metal — macOS |
 | [`GPUI-VULKAN`](GPUI-VULKAN/src/main.rs) | Vulkan natif (ash, GLSL → SPIR-V) | **Vulkan natif** — full natif, sans wgpu | Vulkan 1.3 — Windows, Linux ; macOS si MoltenVK expose Vulkan 1.3 (non vérifié) |
 | [`GPUI-DX12`](GPUI-DX12/src/dx12_cube.rs) | D3D12 natif (windows-rs, HLSL → DXBC) | **D3D12 natif** — full natif, sans wgpu | D3D12 — Windows |
 | [`GPUI-OPENGL`](GPUI-OPENGL/src/opengl_cube.rs) | OpenGL 4.5 natif (WGL, GLSL) | **OpenGL natif** — full natif, sans wgpu | OpenGL 4.5 core — Windows |
@@ -21,7 +21,7 @@ Deux familles de variantes :
   en wgpu ou dans l'API native du device choisi.
 - **full natif** : l'UI de GPUI **et** le moteur 3D rendent tous deux dans l'API
   native, wgpu absent du binaire (`cargo tree -p gpui-vulkan` n'en contient pas).
-  Disponible pour Vulkan, D3D12 et OpenGL ; Metal suit par la même couche.
+  Disponible pour les quatre API : Vulkan, D3D12, OpenGL et Metal.
 
 Les moteurs natifs **ne dépendent pas de wgpu** : ils reçoivent de GPUI des
 poignées natives brutes (`MTLDevice`/`MTLCommandQueue`/`MTLTexture`,
@@ -43,7 +43,10 @@ features et compile aussi wgpu dans les variantes full natif (il y reste inutili
 
 `GPUI_D3D12_DEBUG=1` active la couche de debug D3D12 (« Outils graphiques » de Windows)
 et relaie ses avertissements et erreurs sur stderr ; `GPUI_GL_DEBUG=1` fait de même avec
-un contexte OpenGL de debug.
+un contexte OpenGL de debug. Sous macOS, `MTL_DEBUG_LAYER=1` active la validation Metal.
+
+`GPUI_FRAME_DUMP=trame.bmp` écrit en BMP chaque trame présentée, relue par le GPU (wgpu et
+Metal) : capture d'écran sans l'écran, par exemple sur un Mac piloté en SSH.
 
 `GPUI-OPENGL` exige un pilote OpenGL 4.5 core (WGL) : sinon, échec explicite.
 
@@ -104,14 +107,15 @@ La recette :
 Sur une UI wgpu, `handle.as_wgpu()` donne en plus l'accès wgpu (`WgpuSurfaceHandle`).
 Le renderer de l'UI passe par une couche interne (`platform/cross/hal.rs`) dont wgpu
 et Vulkan natif sont deux implémentations, choisies par `RendererBackend`
-(ou `GPUI_RENDERER=wgpu|vulkan|dx12|opengl` pour les exemples du fork). Les shaders WGSL
-de l'UI sont traduits au build par naga (SPIR-V pour Vulkan, HLSL compilé en DXBC par FXC
-pour D3D12, GLSL 4.50 pour OpenGL). Les fenêtres D3D12 et OpenGL sont opaques, là où Vulkan
+(ou `GPUI_RENDERER=wgpu|vulkan|dx12|opengl|metal` pour les exemples du fork). Les shaders
+WGSL de l'UI sont traduits au build par naga (SPIR-V pour Vulkan, HLSL compilé en DXBC par
+FXC pour D3D12, GLSL 4.50 pour OpenGL, MSL pour Metal). Les fenêtres D3D12 et OpenGL sont opaques, là où Vulkan
 prend l'alpha prémultiplié : les flous d'arrière-plan diffèrent donc légèrement entre ces
 API, exactement comme avec wgpu sur chacune d'elles.
 
 - **Metal** : même `MTLCommandQueue` que le compositeur ⇒ ordre garanti, textures
-  « tracked » ⇒ aucun fence. On commit puis `swap_buffers()`.
+  « tracked » ⇒ aucun fence. On commit puis `swap_buffers()`, que l'UI tourne sur wgpu ou
+  en Metal natif.
 - **Vulkan** : `VkQueue` exige une synchronisation externe ⇒ tout `vkQueueSubmit`
   se fait sous `native_queue_lock()` (le compositeur le prend aussi). Le tampon
   arrive et repart en `SHADER_READ_ONLY_OPTIMAL` ; les dépendances de subpass

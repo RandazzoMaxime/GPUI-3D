@@ -1,7 +1,7 @@
 #![allow(clippy::disallowed_methods, reason = "build scripts are exempt")]
 
 // GPUI-3D : composition des shaders WGSL de l'UI, partagée avec le runtime.
-#[cfg(any(feature = "vulkan", feature = "dx12", feature = "opengl"))]
+#[cfg(any(feature = "vulkan", feature = "dx12", feature = "opengl", feature = "metal"))]
 #[path = "src/platform/cross/shaders.rs"]
 #[allow(dead_code)]
 mod shaders;
@@ -14,6 +14,86 @@ fn main() {
     compile_dxbc();
     #[cfg(feature = "opengl")]
     compile_glsl();
+    #[cfg(feature = "metal")]
+    compile_msl();
+}
+
+/// GPUI-3D : WGSL → MSL (naga) hors ligne pour le backend Metal natif, un source par
+/// shader (compilé par le pilote au démarrage). Liaisons fixes : `@group(g) @binding(b)` →
+/// emplacement `g * BINDING_STRIDE + b` de sa classe (buffer, texture, sampler). naga
+/// déclare un tampon des tailles de tableaux dès qu'un storage est de taille dynamique ;
+/// sans vérification de bornes il n'est jamais lu, mais reçoit un emplacement réservé.
+#[cfg(feature = "metal")]
+fn compile_msl() {
+    use std::fmt::Write as _;
+
+    use naga::back::msl;
+    use naga::valid::{Capabilities, ValidationFlags, Validator};
+
+    const BINDING_STRIDE: u32 = 4;
+    const SIZES_BUFFER_SLOT: u8 = 30;
+
+    println!("cargo::rerun-if-changed=src/platform/cross/shaders.rs");
+    println!("cargo::rerun-if-changed=src/platform/cross/shaders");
+    let out = std::env::var("OUT_DIR").expect("OUT_DIR");
+    let mut sources = String::from("pub(crate) fn msl(shader: &str) -> Option<&'static str> {\n    match shader {\n");
+    let mut entries = String::from("pub(crate) fn msl_entry(shader: &str, entry: &str) -> Option<&'static str> {\n    match (shader, entry) {\n");
+    for (name, _, _) in shaders::SHADERS {
+        let source = shaders::wgsl_source(name);
+        let module = naga::front::wgsl::parse_str(&source)
+            .unwrap_or_else(|error| panic!("{name}.wgsl : {}", error.emit_to_string(&source)));
+        let info = Validator::new(ValidationFlags::all(), Capabilities::all())
+            .validate(&module)
+            .unwrap_or_else(|error| panic!("{name}.wgsl : {error:?}"));
+        let mut resources = msl::BindingMap::default();
+        for (_, global) in module.global_variables.iter() {
+            let Some(binding) = &global.binding else { continue };
+            let slot = u8::try_from(binding.group * BINDING_STRIDE + binding.binding).expect("emplacement Metal");
+            let mut target = msl::BindTarget::default();
+            match module.types[global.ty].inner {
+                naga::TypeInner::Image { .. } => target.texture = Some(slot),
+                naga::TypeInner::Sampler { .. } => target.sampler = Some(msl::BindSamplerTarget::Resource(slot)),
+                _ => target.buffer = Some(slot),
+            }
+            resources.insert(binding.clone(), target);
+        }
+        let per_entry_point_map = module
+            .entry_points
+            .iter()
+            .map(|entry_point| {
+                let resources = msl::EntryPointResources {
+                    resources: resources.clone(),
+                    sizes_buffer: Some(SIZES_BUFFER_SLOT),
+                    ..Default::default()
+                };
+                (entry_point.name.clone(), resources)
+            })
+            .collect();
+        let options = msl::Options {
+            lang_version: (2, 4),
+            per_entry_point_map,
+            fake_missing_bindings: false,
+            ..Default::default()
+        };
+        let (msl_source, translation) =
+            msl::write_string(&module, &info, &options, &msl::PipelineOptions::default())
+                .unwrap_or_else(|error| panic!("{name}.wgsl → MSL : {error:?}"));
+        let file = format!("{name}.metal");
+        std::fs::write(format!("{out}/{file}"), msl_source).expect("écriture MSL");
+        writeln!(sources, "        {name:?} => Some(include_str!(concat!(env!(\"OUT_DIR\"), {:?}))),", format!("/{file}")).ok();
+        for (entry_point, translated) in module.entry_points.iter().zip(&translation.entry_point_names) {
+            let translated = translated
+                .as_ref()
+                .unwrap_or_else(|error| panic!("{name}::{} : {error:?}", entry_point.name));
+            writeln!(entries, "        ({name:?}, {:?}) => Some({translated:?}),", entry_point.name).ok();
+        }
+    }
+    sources.push_str("        _ => None,\n    }\n}\n");
+    entries.push_str("        _ => None,\n    }\n}\n");
+    let table = format!(
+        "pub(crate) const BINDING_STRIDE: u32 = {BINDING_STRIDE};\npub(crate) const SIZES_BUFFER_SLOT: usize = {SIZES_BUFFER_SLOT};\n{sources}{entries}"
+    );
+    std::fs::write(format!("{out}/msl.rs"), table).expect("écriture msl.rs");
 }
 
 /// GPUI-3D : WGSL → GLSL 4.50 (naga) hors ligne pour le backend OpenGL natif, un source
