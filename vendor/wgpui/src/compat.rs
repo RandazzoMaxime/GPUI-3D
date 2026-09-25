@@ -1,9 +1,9 @@
-//! Compatibilité. Le fork gpui local (hors dépôt, perdu) exposait ces
-//! API, attendues par `vendor/gpui-component` et les crates de l'app. Elles
-//! sont rétablies ici sur le WGPUI amont (Far-Beyond-Pulsar/WGPUI) sous forme
-//! minimale ; à reporter lors d'une mise à jour amont. Voir aussi les blocs
-//! « Compat » dans `elements/div.rs`, `styled.rs` et
-//! `text_system/line.rs`, et les re-exports accesskit dans `gpui.rs`.
+//! Compatibilité : API d'un fork gpui antérieur, attendues par des crates qui
+//! en dépendent (gpui-component notamment). Elles sont rétablies ici sur le
+//! WGPUI amont (Far-Beyond-Pulsar/WGPUI) sous forme minimale ; à reporter lors
+//! d'une mise à jour amont. Voir aussi les blocs « Compat » dans
+//! `elements/div.rs`, `styled.rs` et `text_system/line.rs`, et les re-exports
+//! accesskit dans `gpui.rs`.
 
 use std::borrow::Cow;
 use std::fmt::Debug;

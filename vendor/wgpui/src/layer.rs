@@ -427,7 +427,7 @@ pub(crate) fn inflate_bounds(bounds: Bounds<Pixels>, margin: crate::Size<Pixels>
 ///
 /// Read once, at first use.
 pub(crate) fn layers_enabled() -> bool {
-    // Défaut OFF : le composite d'un layer retenu ne reproduit pas
+    // Defaut OFF : le composite d'un layer retenu ne reproduit pas
     // son rendu neuf (bandeau de zones vide, verre repeint sur le texte —
     // captures du 2026-09-03). Opt-in WGPUI_LAYERS=1 tant que la parite
     // rejeu / rendu neuf n'est pas prouvee par test (lot L9).

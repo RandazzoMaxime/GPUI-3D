@@ -9,7 +9,7 @@
 // Fill triangles (from lyon tessellation) always have st = (0, 1), so
 //   0*0 = 0 < 1  →  always kept.
 //
-// Antialiased-stroke triangles (profile chart) use t <= -1: s is the
+// Antialiased-stroke triangles (e.g. a profile chart) use t <= -1: s is the
 // signed distance to the stroke axis in logical px and -1 - t its half width;
 // alpha is scaled by the pixel's 1-D box coverage of [-hw, hw].
 

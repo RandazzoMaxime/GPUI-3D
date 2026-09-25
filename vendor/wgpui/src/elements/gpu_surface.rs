@@ -138,7 +138,7 @@ impl SurfaceHandle {
 
     /// Réveille la boucle de fenêtre pour qu'elle compose la trame publiée par
     /// [`swap_buffers()`](Self::swap_buffers), sans poser le drapeau `redraw_pending` :
-    /// celui-ci passe par le blit rapide (désactivé par défaut) et retombe en
+    /// celui-ci passe par le blit rapide et, s'il est désactivé, retombe en
     /// `force_render`, donc en dessin complet.
     pub fn request_window_redraw(&self) {
         match &self.inner.winit_window {

@@ -454,7 +454,7 @@ impl ScrollDelta {
     ///
     /// winit on Windows reports `±1.0` per mouse-wheel notch (`WM_MOUSEWHEEL` /
     /// `WHEEL_DELTA`) and does not apply `SPI_GETWHEELSCROLLLINES`. Chromium
-    /// maps a default notch to 100px; this crate uses 55px.
+    /// maps a default notch to 100px; 55px matches common desktop toolkits (~54px).
     pub const OVERFLOW_LINE_PX: f32 = 55.0;
 
     /// Line-delta → pixels for panel/list overflow. Trackpad `Pixels` pass

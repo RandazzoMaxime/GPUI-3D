@@ -1,6 +1,6 @@
 param([string]$A, [string]$B, [int]$SkipTop = 0, [string]$Map = "")
-# Écart par pixel sur l'image entière (max R,G,B). Tailles différentes = échec.
-# -Map : écrit l'écart amplifié (x10) en niveaux de gris et la boîte des pixels > 2 LSB.
+# Per-pixel difference over the whole image (max of R,G,B). Different sizes = failure.
+# -Map: writes the difference amplified x10 as grayscale, and the box of pixels > 2 LSB.
 Add-Type -AssemblyName System.Drawing
 function Pixels($path) {
     $bmp = [System.Drawing.Bitmap]::FromFile($path)
@@ -30,7 +30,7 @@ for ($i = $SkipTop * $pa.w * 4; $i -lt $pa.bytes.Length; $i += 4) {
 }
 "{0,-24} max {1,3} | >2 LSB {2,7} / {3}" -f (Split-Path $B -Leaf), $max, $gt2, ($pa.w * $pa.h)
 if ($Map) {
-    if ($gt2 -gt 0) { "  boîte > 2 LSB : x {0}..{1}, y {2}..{3}" -f $minX, $maxX, $minY, $maxY }
+    if ($gt2 -gt 0) { "  box > 2 LSB: x {0}..{1}, y {2}..{3}" -f $minX, $maxX, $minY, $maxY }
     $bmp = New-Object System.Drawing.Bitmap $pa.w, $pa.h, ([System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
     $rect = New-Object System.Drawing.Rectangle 0, 0, $pa.w, $pa.h
     $data = $bmp.LockBits($rect, 'WriteOnly', 'Format32bppArgb')

@@ -1,6 +1,6 @@
 param([string]$Exe, [string]$Out, [int]$Wait = 8)
-# Lance l'exe, attend, capture le contenu de SA fenêtre (PrintWindow, insensible aux
-# fenêtres superposées), relève les logs, tue le process et attend sa fin.
+# Starts the exe, waits, captures ITS window content (PrintWindow, immune to
+# overlapping windows), prints the logs, kills the process and waits for it to exit.
 Add-Type -AssemblyName System.Drawing
 Add-Type @"
 using System; using System.Runtime.InteropServices;

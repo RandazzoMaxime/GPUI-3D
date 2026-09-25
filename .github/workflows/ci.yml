@@ -1,5 +1,5 @@
-# Build de chaque variante sur son système. Les runners hébergés n'ont pas de GPU :
-# les rendus se vérifient à la main avec tools/bench (voir docs/ARCHITECTURE.md).
+# Builds each variant on its own OS. Hosted runners have no GPU: rendering is
+# verified by hand with tools/bench (see docs/ARCHITECTURE.md).
 name: CI
 
 on:

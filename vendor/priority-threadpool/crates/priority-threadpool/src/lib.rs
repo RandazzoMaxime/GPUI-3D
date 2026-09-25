@@ -233,7 +233,7 @@ where
     pub fn queue<M: Send + Sync + 'static>(&self, priority: &P, runnable: Runnable<M>) {
         // Le job AVANT le crédit : un worker qui prend le crédit entre les deux
         // fait `pop()` sur une pile vide et le job reste orphelin à jamais (LIFO).
-        // Timer de `ui_boot` perdu ⇒ ticks figés (2026-09-17).
+        // Symptôme observé : un timer de démarrage perdu, ticks figés.
         self.queue.push(
             priority,
             Job {
@@ -254,7 +254,7 @@ where
     ) {
         // Le job AVANT le crédit : un worker qui prend le crédit entre les deux
         // fait `pop()` sur une pile vide et le job reste orphelin à jamais (LIFO).
-        // Timer de `ui_boot` perdu ⇒ ticks figés (2026-09-17).
+        // Symptôme observé : un timer de démarrage perdu, ticks figés.
         self.queue.push(
             priority,
             Job {
