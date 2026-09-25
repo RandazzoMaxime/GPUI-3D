@@ -2794,12 +2794,32 @@ impl<G: Gpu> Renderer<G> {
         self.context.submit(command_encoder);
         log::trace!("Renderer::draw: presenting surface");
         self.context.present(surface_texture);
+        if let Some(path) = frame_dump_path() {
+            self.dump_frame(path);
+        }
 
         // Start the async readbacks now that their commands were submitted.
         #[cfg(feature = "flamegraph")]
         self.profiler.get_mut().after_submit();
 
         log::trace!("Renderer::draw: frame complete");
+    }
+
+    /// Banc de non-régression : relit le framebuffer que la trame vient de présenter et
+    /// l'écrit en BMP (écriture puis renommage : un arrêt brutal ne laisse pas de fichier
+    /// tronqué).
+    fn dump_frame(&self, path: &std::path::Path) {
+        let Some(texture) = self.persistent_framebuffer.as_ref() else { return };
+        let (width, height) = G::texture_size(texture);
+        let Some(pixels) = self.context.read_texture_bgra(texture) else {
+            log::error!("GPUI_FRAME_DUMP : relecture non prise en charge par ce backend");
+            return;
+        };
+        let partial = path.with_extension("bmp.partial");
+        let written = std::fs::write(&partial, bmp_bgra(width, height, &pixels)).and_then(|()| std::fs::rename(&partial, path));
+        if let Err(error) = written {
+            log::error!("GPUI_FRAME_DUMP {} : {error}", path.display());
+        }
     }
 
     /// Get list of surfaces that have pending redraws
@@ -3139,3 +3159,29 @@ fn flamegraph_kind(kind: SlabKind) -> crate::DrawCallKind {
 #[cfg(test)]
 #[path = "renderer_slab_tests.rs"]
 mod slab_tests;
+
+/// Chemin de `GPUI_FRAME_DUMP` (banc de non-régression), lu une fois.
+fn frame_dump_path() -> Option<&'static std::path::Path> {
+    static PATH: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+    PATH.get_or_init(|| std::env::var_os("GPUI_FRAME_DUMP").map(std::path::PathBuf::from)).as_deref()
+}
+
+/// BMP 32 bits descendant (hauteur négative), pixels BGRA sans compression.
+fn bmp_bgra(width: u32, height: u32, pixels: &[u8]) -> Vec<u8> {
+    const HEADERS: u32 = 14 + 40;
+    let mut bmp = Vec::with_capacity(HEADERS as usize + pixels.len());
+    bmp.extend_from_slice(b"BM");
+    bmp.extend_from_slice(&(HEADERS + pixels.len() as u32).to_le_bytes());
+    bmp.extend_from_slice(&0u32.to_le_bytes());
+    bmp.extend_from_slice(&HEADERS.to_le_bytes());
+    bmp.extend_from_slice(&40u32.to_le_bytes());
+    bmp.extend_from_slice(&(width as i32).to_le_bytes());
+    bmp.extend_from_slice(&(-(height as i32)).to_le_bytes());
+    bmp.extend_from_slice(&1u16.to_le_bytes());
+    bmp.extend_from_slice(&32u16.to_le_bytes());
+    bmp.extend_from_slice(&0u32.to_le_bytes());
+    bmp.extend_from_slice(&(pixels.len() as u32).to_le_bytes());
+    bmp.extend_from_slice(&[0; 16]);
+    bmp.extend_from_slice(pixels);
+    bmp
+}

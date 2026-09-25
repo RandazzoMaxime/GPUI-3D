@@ -626,6 +626,46 @@ impl Gpu for WgpuGpu {
         None
     }
 
+    fn read_texture_bgra(&self, texture: &wgpu::Texture) -> Option<Vec<u8>> {
+        let (width, height) = (texture.width(), texture.height());
+        let row = width * 4;
+        let padded = row.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("frame_dump"),
+            size: u64::from(padded * height),
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self.create_encoder("frame_dump");
+        encoder.copy_texture_to_buffer(
+            texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(padded), rows_per_image: None },
+            },
+            texture.size(),
+        );
+        self.submit(encoder);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        buffer.slice(..).map_async(wgpu::MapMode::Read, move |result| {
+            if sender.send(result).is_err() {
+                log::debug!("relecture de trame abandonnée");
+            }
+        });
+        self.device.poll(wgpu::PollType::wait_indefinitely()).ok()?;
+        receiver.recv().ok()?.ok()?;
+        let view = buffer.slice(..).get_mapped_range().ok()?;
+        let swap = matches!(texture.format(), wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb);
+        let mut pixels = Vec::with_capacity((row * height) as usize);
+        for line in view.chunks(padded as usize) {
+            pixels.extend_from_slice(&line[..row as usize]);
+        }
+        if swap {
+            pixels.chunks_exact_mut(4).for_each(|pixel| pixel.swap(0, 2));
+        }
+        Some(pixels)
+    }
+
     fn native_texture(texture: &wgpu::Texture, view: &wgpu::TextureView) -> Option<NativeTexture> {
         #[cfg(target_vendor = "apple")]
         // SAFETY: poignée lue sans être détruite ; l'appelant retient la texture.

@@ -329,6 +329,12 @@ pub(crate) trait Gpu: Sized + Send + Sync + 'static {
     /// Poignées natives du device et de la queue (`None` : API sans interop native).
     fn native_device(&self) -> Option<NativeDevice>;
     fn native_texture(texture: &Self::Texture, view: &Self::TextureView) -> Option<NativeTexture>;
+
+    /// Banc de non-régression (`GPUI_FRAME_DUMP`) : pixels de `texture` en BGRA8, lignes
+    /// jointives, relus en bloquant. `None` : relecture non prise en charge.
+    fn read_texture_bgra(&self, _texture: &Self::Texture) -> Option<Vec<u8>> {
+        None
+    }
 }
 
 /// Profilage GPU de la feature `flamegraph` (timestamps de passes, capture profonde).
