@@ -70,49 +70,7 @@ fn mails() -> Rc<Vec<Mail>> {
         .into()
 }
 
-/// `BENCH_WIDGETS=component` : lignes construites avec gpui-component.
-fn component_widgets() -> bool {
-    static ON: std::sync::LazyLock<bool> =
-        std::sync::LazyLock::new(|| std::env::var("BENCH_WIDGETS").is_ok_and(|v| v == "component"));
-    *ON
-}
-
-/// La même ligne avec gpui-component (Avatar, Label, Tag), pour comparer au GPUI pur.
-fn mail_row_component(ix: usize, mail: &Mail) -> AnyElement {
-    use gpui_component::{avatar::Avatar, h_flex, label::Label, tag::Tag, v_flex};
-    h_flex()
-        .id(ix)
-        .h(px(ROW_HEIGHT))
-        .w_full()
-        .items_center()
-        .gap_3()
-        .px_4()
-        .border_b_1()
-        .border_color(rgb(0xececf0))
-        .hover(|s| s.bg(rgb(0xf4f6fb)))
-        .on_click(|_, _, _| {})
-        .child(Avatar::new().name(mail.sender.clone()))
-        .child(
-            v_flex()
-                .flex_1()
-                .min_w_0()
-                .child(
-                    h_flex()
-                        .justify_between()
-                        .child(Label::new(mail.sender.clone()).when(mail.unread, |l| l.font_weight(FontWeight::BOLD)))
-                        .child(Label::new(mail.date.clone()).text_xs().text_color(rgb(0x8a8a96))),
-                )
-                .child(Label::new(mail.subject.clone()).text_sm().truncate())
-                .child(Label::new(mail.preview.clone()).text_xs().text_color(rgb(0x8a8a96)).truncate()),
-        )
-        .child(h_flex().gap_1().children(mail.badges.iter().map(|b| Tag::secondary().child(b.clone()))))
-        .into_any_element()
-}
-
 fn mail_row(ix: usize, mail: &Mail) -> AnyElement {
-    if component_widgets() {
-        return mail_row_component(ix, mail);
-    }
     div()
         .id(ix)
         .h(px(ROW_HEIGHT))
@@ -546,7 +504,6 @@ fn pump_root() -> bool {
     *ROOT
 }
 
-/// Racine de fenêtre commune aux deux variantes (GPUI pur / gpui-component).
 struct Top(AnyView);
 
 impl Render for Top {
@@ -652,9 +609,6 @@ fn main() {
         let frames_view = frames.clone();
         let frames_root = frames.clone();
         let mode_view = mode.clone();
-        if component_widgets() {
-            gpui_component::init(cx);
-        }
         let frames_3d_view = frames_3d.clone();
         cx.open_window(options, move |window, cx: &mut App| {
             let view: AnyView = if mode_view == "gallery" {
@@ -695,13 +649,7 @@ fn main() {
                 view
             };
             let root: AnyView = cx.new(|_| Root(view, frames_root)).into();
-            // gpui-component exige sa racine (calques : dialogues, notifications, infobulles).
-            let top: AnyView = if component_widgets() {
-                cx.new(|cx| gpui_component::Root::new(root, window, cx)).into()
-            } else {
-                root
-            };
-            cx.new(|_| Top(top))
+            cx.new(|_| Top(root))
         })
         .expect("fenêtre");
         cx.activate(true);

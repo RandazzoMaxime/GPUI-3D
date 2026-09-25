@@ -1,5 +1,5 @@
 //! Compatibilité. Le fork gpui local (hors dépôt, perdu) exposait ces
-//! API, attendues par `vendor/gpui-component` et les crates de l'app. Elles
+//! API, attendues par des crates qui en dépendent. Elles
 //! sont rétablies ici sur le WGPUI amont (Far-Beyond-Pulsar/WGPUI) sous forme
 //! minimale ; à reporter lors d'une mise à jour amont. Voir aussi les blocs
 //! « Compat » dans `elements/div.rs`, `styled.rs` et

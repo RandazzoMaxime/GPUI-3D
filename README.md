@@ -62,35 +62,7 @@ instanciés éclairés, caméra) et `main.rs` (état et vues). Ce qu'il montre :
   au-dessus des panneaux), molette = zoom.
 
 Pour aller plus loin : sélection par clic dans la 3D (lancer de rayon), champs de
-saisie (gpui-component `Input`), sauvegarde de la scène.
-
-## gpui-component
-
-[`vendor/gpui-component`](vendor/gpui-component) (fork longbridge, adapté à ce GPUI) est
-disponible mais **pas utilisé par le starter**. Il apporte ce qu'on ne réécrit pas en
-une après-midi : éditeur de texte (`input` : IME, sélection, presse-papiers, annuler,
-coloration), `table` et listes virtualisées, `dock` / panneaux redimensionnables, `tree`,
-`select`, menus et menus contextuels, `popover` / `tooltip` / `dialog` / `notification` /
-`sheet`, sélecteurs de date et de couleur, graphiques, et un système de thèmes.
-
-Coût mesuré (`BENCH_WIDGETS=component`, mêmes lignes de mail qu'en GPUI pur, sans vsync) :
-**+13 % d'instructions (−8 % de fps) quand tout se reconstruit à chaque image, +5 % (−4 %)
-avec des lignes en vues `.cached()`**, aucun pic. L'écart vient de ce que les composants
-dessinent en plus (+38 % d'éléments, +65 % de quads : bordures, fonds, conteneurs), pas
-d'un coût par image caché. Points d'attention : racine `gpui_component::Root` obligatoire
-(calques), `gpui_component::init(cx)`, un `Input` focalisé re-rend sa vue toutes les
-~500 ms (curseur), dépendances lourdes à compiler (tree-sitter, syntect, ropey…).
-
-Règle : composants pour ce qui est complexe (saisie, tables, dock, menus, dialogues),
-GPUI pur ou vues `.cached()` pour ce qui se répète (lignes de liste, grilles). Pour
-l'ajouter à une crate :
-
-```toml
-gpui-component = { path = "../vendor/gpui-component/crates/ui" }
-```
-
-puis `gpui_component::init(cx)` au démarrage et la vue racine enveloppée dans
-`gpui_component::Root::new(vue, window, cx)`.
+saisie, sauvegarde de la scène.
 
 ## Architecture
 
@@ -100,10 +72,9 @@ GPUI-WGPU/        moteur wgpu (WGSL)
 GPUI-METAL/       moteur Metal natif (MSL)
 GPUI-VULKAN/      moteur Vulkan natif (GLSL compilé en SPIR-V par build.rs)
 starter/          app de démarrage (éditeur de scène)
-bench/            banc de performance (défilement, overlay 3D, composants)
+bench/            banc de performance (défilement, overlay 3D)
 vendor/           forks — provenance : vendor/FORKS.md
   wgpui/          GPUI (Zed → gpui-ce → WGPUI) + patchs GPUI-3D
-  gpui-component/ composants (longbridge) adaptés à ce GPUI
   priority-threadpool/  pool de fils (timers GPUI), course corrigée
 ```
 

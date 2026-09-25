@@ -15,7 +15,7 @@ synchronisés automatiquement. Un correctif amont se reprend à la main
 
 Licence : Apache-2.0 (`vendor/wgpui/LICENSE-APACHE`).
 
-API rétablies pour gpui-component (`src/compat.rs`, blocs « Compat »), device
+API rétablies (`src/compat.rs`, blocs « Compat »), device
 hôte partagé et sélecteur d'adaptateur, `WgpuSurfaceHandle` (surfaces zéro copie,
 `present_synced_silent`, `request_window_redraw`), boucle réveillée seulement quand une
 trame est voulue, couches retenues désactivées par défaut (`WGPUI_LAYERS`), corrections
@@ -38,16 +38,6 @@ de saisie macOS / Windows, double `MouseUp`, verre figé sous les modales.
 
 Tests : `cd vendor/wgpui && cargo test --lib --features test-support`
 (dont `view::translated_reuse_tests`).
-
-## `vendor/gpui-component`
-
-| Étape | Source | Révision |
-|---|---|---|
-| Origine | [longbridge/gpui-component](https://github.com/longbridge/gpui-component) | 0.5.2 |
-| Adaptation WGPUI | ce dépôt, `vendor/gpui-component` | fork local `ebef0e1c`, vendoré en `a98026205`, lock `19e1cdf75` |
-| GPUI-3D | ce dépôt | seules `crates/{ui,base,macros,assets}` ; feature `flamegraph` de gpui retirée du workspace |
-
-Licence : Apache-2.0 (`vendor/gpui-component/LICENSE-APACHE`).
 
 ## `vendor/priority-threadpool`
 
