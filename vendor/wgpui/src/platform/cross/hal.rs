@@ -25,6 +25,8 @@ pub(crate) mod wgpu;
 pub(crate) mod vulkan;
 #[cfg(all(feature = "dx12", windows))]
 pub(crate) mod d3d12;
+#[cfg(all(feature = "opengl", windows))]
+pub(crate) mod gl;
 
 /// Usages d'un buffer (combinables par `|`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,6 +63,8 @@ impl TextureUsage {
     pub(crate) const COPY_SRC: Self = Self(1 << 2);
     pub(crate) const COPY_DST: Self = Self(1 << 3);
 
+    /// OpenGL ignore les usages de texture.
+    #[cfg_attr(not(any(feature = "wgpu", feature = "vulkan", all(feature = "dx12", windows))), allow(dead_code))]
     pub(crate) fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0
     }
@@ -163,8 +167,11 @@ pub(crate) struct PipelineDesc<'a, G: Gpu> {
     pub(crate) vertex_entry: &'static str,
     pub(crate) fragment_entry: &'static str,
     pub(crate) topology: Topology,
-    /// Un layout par groupe, dans l'ordre des `@group`.
+    /// Un layout par groupe, dans l'ordre des `@group`. OpenGL lie par points fixes et
+    /// n'a pas d'objet pipeline lié au format : il ignore ces deux champs.
+    #[cfg_attr(not(any(feature = "wgpu", feature = "vulkan", all(feature = "dx12", windows))), allow(dead_code))]
     pub(crate) layouts: &'a [&'a G::BindGroupLayout],
+    #[cfg_attr(not(any(feature = "wgpu", feature = "vulkan", all(feature = "dx12", windows))), allow(dead_code))]
     pub(crate) format: G::Format,
     pub(crate) blend: Blend,
 }
@@ -189,7 +196,8 @@ pub(crate) enum Acquire<F> {
     Frame(F),
     /// Swapchain à reconfigurer (taille, perte, validation), puis réessayer.
     Outdated,
-    /// Trame à sauter (délai, fenêtre masquée).
+    /// Trame à sauter (délai, fenêtre masquée). OpenGL présente toujours.
+    #[cfg_attr(not(any(feature = "wgpu", feature = "vulkan", all(feature = "dx12", windows))), allow(dead_code))]
     Skip(&'static str),
 }
 

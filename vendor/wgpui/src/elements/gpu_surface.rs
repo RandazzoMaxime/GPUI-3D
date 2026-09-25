@@ -545,6 +545,15 @@ pub enum NativeDevice {
         /// `ID3D12CommandQueue*`.
         queue: *mut std::ffi::c_void,
     },
+    /// Contexte WGL de l'UI. Le moteur crée le sien en partage d'objets avec lui
+    /// (`wglCreateContextAttribsARB`, sous [`SurfaceHandle::native_queue_lock`]) sur une
+    /// fenêtre au format de pixel `pixel_format`.
+    OpenGl {
+        /// `HGLRC`.
+        context: *mut std::ffi::c_void,
+        /// Index du format de pixel (`SetPixelFormat`).
+        pixel_format: i32,
+    },
 }
 
 // SAFETY: poignées opaques ; `id<MTLDevice>`/`id<MTLCommandQueue>` et les objets D3D12
@@ -584,6 +593,9 @@ pub enum NativeTexture {
     },
     /// `ID3D12Resource*` emprunté.
     Dx12(*mut std::ffi::c_void),
+    /// Nom de texture GL (`GL_TEXTURE_2D`, `SRGB8_ALPHA8`, ligne 0 en haut), partagé avec
+    /// le contexte du moteur. Contrat : `glFinish` avant `swap_buffers`.
+    OpenGl(u32),
 }
 
 // SAFETY: la texture native est retenue par `_retained` ; les poignées sont opaques.

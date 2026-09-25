@@ -1883,6 +1883,7 @@ dependencies = [
  "futures",
  "futures-concurrency",
  "getrandom 0.4.3",
+ "glow",
  "gpui-macros",
  "gpui_collections",
  "gpui_http_client",

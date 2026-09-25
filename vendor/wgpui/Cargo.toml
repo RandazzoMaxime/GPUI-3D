@@ -26,6 +26,8 @@ wgpu = ["dep:wgpu", "dep:ash", "dep:windows-core"]
 vulkan = ["dep:ash", "dep:ash-window", "dep:naga"]
 # GPUI-3D : renderer UI D3D12 natif (windows-rs), sans wgpu. WGSL → HLSL (naga) → DXBC (FXC) au build.
 dx12 = ["dep:windows", "dep:windows-core", "dep:naga", "naga/hlsl-out"]
+# GPUI-3D : renderer UI OpenGL 4.5 natif (WGL, glow), sans wgpu. WGSL → GLSL (naga) au build.
+opengl = ["dep:glow", "dep:windows", "dep:naga", "naga/glsl-out"]
 test-support = [
     "leak-detection",
     "collections/test-support",
@@ -178,8 +180,13 @@ windows = { version = "0.62", optional = true, features = [
     "Win32_Graphics_Direct3D12",
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_OpenGL",
+    "Win32_System_LibraryLoader",
     "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
 ] }
+glow = { version = "0.17", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 x11-dl = "2.21.0"

@@ -1,7 +1,7 @@
 #![allow(clippy::disallowed_methods, reason = "build scripts are exempt")]
 
 // GPUI-3D : composition des shaders WGSL de l'UI, partagée avec le runtime.
-#[cfg(any(feature = "vulkan", feature = "dx12"))]
+#[cfg(any(feature = "vulkan", feature = "dx12", feature = "opengl"))]
 #[path = "src/platform/cross/shaders.rs"]
 #[allow(dead_code)]
 mod shaders;
@@ -12,6 +12,78 @@ fn main() {
     compile_spirv();
     #[cfg(feature = "dx12")]
     compile_dxbc();
+    #[cfg(feature = "opengl")]
+    compile_glsl();
+}
+
+/// GPUI-3D : WGSL → GLSL 4.50 (naga) hors ligne pour le backend OpenGL natif, un source
+/// par point d'entrée (compilé par le pilote au démarrage). Convention de wgpu-GL : Y
+/// retourné dans le vertex shader, ligne 0 des textures en haut. Liaisons fixes :
+/// `@group(g) @binding(b)` → point de liaison `g * BINDING_STRIDE + b` de sa classe.
+#[cfg(feature = "opengl")]
+fn compile_glsl() {
+    use std::fmt::Write as _;
+
+    use naga::back::glsl;
+    use naga::valid::{Capabilities, ValidationFlags, Validator};
+
+    const BINDING_STRIDE: u32 = 4;
+
+    println!("cargo::rerun-if-changed=src/platform/cross/shaders.rs");
+    println!("cargo::rerun-if-changed=src/platform/cross/shaders");
+    let out = std::env::var("OUT_DIR").expect("OUT_DIR");
+    let mut table = String::new();
+    writeln!(table, "pub(crate) const BINDING_STRIDE: u32 = {BINDING_STRIDE};").ok();
+    table.push_str("pub(crate) fn glsl(shader: &str, entry: &str) -> Option<&'static str> {\n    match (shader, entry) {\n");
+    for (name, _, _) in shaders::SHADERS {
+        let source = shaders::wgsl_source(name);
+        let module = naga::front::wgsl::parse_str(&source)
+            .unwrap_or_else(|error| panic!("{name}.wgsl : {}", error.emit_to_string(&source)));
+        let info = Validator::new(ValidationFlags::all(), Capabilities::all())
+            .validate(&module)
+            .unwrap_or_else(|error| panic!("{name}.wgsl : {error:?}"));
+        let mut binding_map = glsl::BindingMap::default();
+        for (_, global) in module.global_variables.iter() {
+            let Some(binding) = &global.binding else { continue };
+            let slot = binding.group * BINDING_STRIDE + binding.binding;
+            binding_map.insert(binding.clone(), u8::try_from(slot).expect("point de liaison GL"));
+        }
+        let options = glsl::Options {
+            version: glsl::Version::Desktop(450),
+            writer_flags: glsl::WriterFlags::ADJUST_COORDINATE_SPACE,
+            binding_map,
+            zero_initialize_workgroup_memory: false,
+        };
+        for entry_point in &module.entry_points {
+            let pipeline_options = glsl::PipelineOptions {
+                shader_stage: entry_point.stage,
+                entry_point: entry_point.name.clone(),
+                multiview: None,
+            };
+            let mut glsl_source = String::new();
+            glsl::Writer::new(
+                &mut glsl_source,
+                &module,
+                &info,
+                &options,
+                &pipeline_options,
+                naga::proc::BoundsCheckPolicies::default(),
+            )
+            .and_then(|mut writer| writer.write())
+            .unwrap_or_else(|error| panic!("{name}::{} → GLSL : {error:?}", entry_point.name));
+            let file = format!("{name}.{}.glsl", entry_point.name);
+            std::fs::write(format!("{out}/{file}"), glsl_source).expect("écriture GLSL");
+            writeln!(
+                table,
+                "        ({name:?}, {:?}) => Some(include_str!(concat!(env!(\"OUT_DIR\"), {:?}))),",
+                entry_point.name,
+                format!("/{file}"),
+            )
+            .ok();
+        }
+    }
+    table.push_str("        _ => None,\n    }\n}\n");
+    std::fs::write(format!("{out}/glsl.rs"), table).expect("écriture glsl.rs");
 }
 
 /// GPUI-3D : WGSL → HLSL (naga, SM 5.1) → DXBC (FXC) hors ligne pour le backend D3D12

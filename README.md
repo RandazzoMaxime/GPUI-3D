@@ -13,7 +13,7 @@ compteur FPS.
 | [`GPUI-METAL`](GPUI-METAL/src/metal_cube.rs) | Metal natif (objc2-metal, MSL) | wgpu (Metal) | Metal — macOS |
 | [`GPUI-VULKAN`](GPUI-VULKAN/src/main.rs) | Vulkan natif (ash, GLSL → SPIR-V) | **Vulkan natif** — full natif, sans wgpu | Vulkan 1.3 — Windows, Linux ; macOS si MoltenVK expose Vulkan 1.3 (non vérifié) |
 | [`GPUI-DX12`](GPUI-DX12/src/dx12_cube.rs) | D3D12 natif (windows-rs, HLSL → DXBC) | **D3D12 natif** — full natif, sans wgpu | D3D12 — Windows |
-| [`GPUI-OPENGL`](GPUI-OPENGL/src/opengl_cube.rs) | OpenGL 4.5 natif (WGL, GLSL) + interop D3D12 pour publier | wgpu (D3D12) | Windows |
+| [`GPUI-OPENGL`](GPUI-OPENGL/src/opengl_cube.rs) | OpenGL 4.5 natif (WGL, GLSL) | **OpenGL natif** — full natif, sans wgpu | OpenGL 4.5 core — Windows |
 
 Deux familles de variantes :
 
@@ -21,7 +21,7 @@ Deux familles de variantes :
   en wgpu ou dans l'API native du device choisi.
 - **full natif** : l'UI de GPUI **et** le moteur 3D rendent tous deux dans l'API
   native, wgpu absent du binaire (`cargo tree -p gpui-vulkan` n'en contient pas).
-  Disponible pour Vulkan et D3D12 ; OpenGL et Metal suivront par la même couche.
+  Disponible pour Vulkan, D3D12 et OpenGL ; Metal suit par la même couche.
 
 Les moteurs natifs **ne dépendent pas de wgpu** : ils reçoivent de GPUI des
 poignées natives brutes (`MTLDevice`/`MTLCommandQueue`/`MTLTexture`,
@@ -42,11 +42,10 @@ Lancer une variante à la fois (`-p`) : un build de tout le workspace unifie les
 features et compile aussi wgpu dans les variantes full natif (il y reste inutilisé).
 
 `GPUI_D3D12_DEBUG=1` active la couche de debug D3D12 (« Outils graphiques » de Windows)
-et relaie ses avertissements et erreurs sur stderr.
+et relaie ses avertissements et erreurs sur stderr ; `GPUI_GL_DEBUG=1` fait de même avec
+un contexte OpenGL de debug.
 
-`GPUI-OPENGL` exige un pilote exposant `GL_EXT_memory_object_win32` et
-`GL_EXT_semaphore_win32`, et un contexte GL sur le même GPU que le device D3D12 de GPUI
-(LUID vérifié) : sinon, échec explicite.
+`GPUI-OPENGL` exige un pilote OpenGL 4.5 core (WGL) : sinon, échec explicite.
 
 `GPUI3D_TIME=1.3` fige la scène (même image pour tous les moteurs, pour les comparer
 pixel à pixel). Sur un poste iGPU + dGPU, le GPU discret est choisi à backend égal ;
@@ -105,11 +104,11 @@ La recette :
 Sur une UI wgpu, `handle.as_wgpu()` donne en plus l'accès wgpu (`WgpuSurfaceHandle`).
 Le renderer de l'UI passe par une couche interne (`platform/cross/hal.rs`) dont wgpu
 et Vulkan natif sont deux implémentations, choisies par `RendererBackend`
-(ou `GPUI_RENDERER=wgpu|vulkan|dx12` pour les exemples du fork). Les shaders WGSL de l'UI
-sont traduits au build par naga (SPIR-V pour Vulkan, HLSL compilé en DXBC par FXC pour
-D3D12). Une swapchain DXGI de fenêtre est opaque, là où Vulkan prend l'alpha prémultiplié :
-les flous d'arrière-plan diffèrent donc légèrement entre les deux API, exactement comme
-avec wgpu sur chacune d'elles.
+(ou `GPUI_RENDERER=wgpu|vulkan|dx12|opengl` pour les exemples du fork). Les shaders WGSL
+de l'UI sont traduits au build par naga (SPIR-V pour Vulkan, HLSL compilé en DXBC par FXC
+pour D3D12, GLSL 4.50 pour OpenGL). Les fenêtres D3D12 et OpenGL sont opaques, là où Vulkan
+prend l'alpha prémultiplié : les flous d'arrière-plan diffèrent donc légèrement entre ces
+API, exactement comme avec wgpu sur chacune d'elles.
 
 - **Metal** : même `MTLCommandQueue` que le compositeur ⇒ ordre garanti, textures
   « tracked » ⇒ aucun fence. On commit puis `swap_buffers()`.
@@ -120,13 +119,11 @@ avec wgpu sur chacune d'elles.
 - **D3D12** : même `ID3D12CommandQueue` que le compositeur ⇒ ordre garanti ; une queue
   D3D12 est thread-safe, pas de verrou. Le tampon arrive et repart en
   `PIXEL_SHADER_RESOURCE | NON_PIXEL_SHADER_RESOURCE` (l'état `RESOURCE` de wgpu).
-- **OpenGL** : GPUI ne tourne pas sur wgpu-GL (pas de binding arrays), le moteur GL
-  s'appuie donc sur le device D3D12. Il rend dans son FBO, relit en BGRA dans un tampon
-  D3D12 partagé importé dans GL (`glImportMemoryWin32HandleEXT`), puis la queue D3D12
-  le copie dans le tampon arrière. Une fence D3D12 partagée, importée en sémaphore GL,
-  ordonne les deux côtés sur GPU. `glClipControl(UPPER_LEFT, ZERO_TO_ONE)` donne la
-  convention clip de wgpu/D3D. L'import exige un contexte **core** : un contexte
-  hérité (compatibilité) le refuse (`GL_OUT_OF_MEMORY`).
+- **OpenGL** : l'UI tourne en OpenGL natif. Le moteur crée son contexte en partage
+  d'objets avec celui de l'UI (`NativeDevice::OpenGl`, sous `native_queue_lock()`), rend
+  directement dans la texture de surface (ligne 0 en haut :
+  `glClipControl(UPPER_LEFT, ZERO_TO_ONE)`) et termine par `glFinish` avant
+  `swap_buffers()` ; deux contextes n'ordonnent pas leurs commandes entre eux.
 - Les tampons sont initialisés à leur création (sinon wgpu les jugerait vierges et
   les effacerait avant de les échantillonner).
 - `adapter_selector` est honoré aussi sur macOS (choisir Metal ou Vulkan/MoltenVK) ;

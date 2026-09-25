@@ -5,7 +5,7 @@
 //! cache, le chrome n'est jamais redessiné pour une trame 3D.
 //!
 //! Le backend de l'UI se choisit par [`Ui`] : wgpu (feature `wgpu`) ou natif (features
-//! `vulkan`, `dx12`, sans wgpu dans le binaire).
+//! `vulkan`, `dx12`, `opengl`, sans wgpu dans le binaire).
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -38,6 +38,9 @@ pub enum Ui {
     /// D3D12 natif, sans wgpu.
     #[cfg(all(feature = "dx12", windows))]
     Dx12,
+    /// OpenGL 4.5 core natif (WGL), sans wgpu.
+    #[cfg(all(feature = "opengl", windows))]
+    OpenGl,
 }
 
 impl Ui {
@@ -52,6 +55,8 @@ impl Ui {
             Self::Vulkan => RendererBackend::Vulkan,
             #[cfg(all(feature = "dx12", windows))]
             Self::Dx12 => RendererBackend::Dx12,
+            #[cfg(all(feature = "opengl", windows))]
+            Self::OpenGl => RendererBackend::OpenGl,
         }
     }
 }
@@ -183,7 +188,8 @@ pub fn run<R: Renderer>(label: &'static str, ui: Ui) {
                 Some(NativeDevice::Metal { .. }) => "Metal",
                 Some(NativeDevice::Vulkan { .. }) => "Vulkan",
                 Some(NativeDevice::Dx12 { .. }) => "D3D12",
-                None => "autre (GL)",
+                Some(NativeDevice::OpenGl { .. }) => "OpenGL",
+                None => "autre",
             };
             cx.new(|_| Shell { backend: label, api, surface, camera, drag_from: Arc::new(Mutex::new(None)), fps })
         })

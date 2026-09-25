@@ -580,6 +580,15 @@ impl PlatformWindow for CrossWindow {
                 #[cfg(feature = "wgpu")]
                 None,
             )),
+            #[cfg(all(feature = "opengl", windows))]
+            GpuContext::OpenGl(context) => Some(self.surface_handle(
+                context,
+                width,
+                height,
+                super::hal::gl::GlGpu::surface_format(format),
+                #[cfg(feature = "wgpu")]
+                None,
+            )),
             GpuContext::Absent(never) => match *never {},
         }
     }

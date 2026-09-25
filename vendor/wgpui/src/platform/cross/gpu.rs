@@ -18,8 +18,10 @@ use super::{
     render_context::{WgpuContext, WgpuOptions},
     renderer::WgpuRenderer,
 };
-#[cfg(any(feature = "vulkan", all(feature = "dx12", windows)))]
+#[cfg(any(feature = "vulkan", all(feature = "dx12", windows), all(feature = "opengl", windows)))]
 use super::{atlas::Atlas, render_context::RenderContext, renderer::Renderer};
+#[cfg(all(feature = "opengl", windows))]
+use super::hal::gl::GlGpu;
 #[cfg(all(feature = "dx12", windows))]
 use super::hal::d3d12::D3d12Gpu;
 #[cfg(feature = "vulkan")]
@@ -42,12 +44,15 @@ pub enum RendererBackend {
     /// D3D12 natif (windows-rs), sans wgpu : GPU matériel le plus performant.
     #[cfg(all(feature = "dx12", windows))]
     Dx12,
+    /// OpenGL 4.5 core natif (WGL), sans wgpu.
+    #[cfg(all(feature = "opengl", windows))]
+    OpenGl,
     #[doc(hidden)]
     Absent(Infallible),
 }
 
 impl RendererBackend {
-    /// Backend nommé par `GPUI_RENDERER` (`wgpu`, `vulkan`, `dx12`) s'il est compilé, sinon le
+    /// Backend nommé par `GPUI_RENDERER` (`wgpu`, `vulkan`, `dx12`, `opengl`) s'il est compilé, sinon le
     /// premier compilé dans l'ordre de déclaration ; `None` si aucun.
     pub fn compiled_default() -> Option<Self> {
         let requested = std::env::var("GPUI_RENDERER").unwrap_or_default();
@@ -58,6 +63,10 @@ impl RendererBackend {
         #[cfg(all(feature = "dx12", windows))]
         if requested.eq_ignore_ascii_case("dx12") {
             return Some(Self::Dx12);
+        }
+        #[cfg(all(feature = "opengl", windows))]
+        if requested.eq_ignore_ascii_case("opengl") {
+            return Some(Self::OpenGl);
         }
         #[cfg(feature = "wgpu")]
         if requested.is_empty() || requested.eq_ignore_ascii_case("wgpu") {
@@ -71,6 +80,8 @@ impl RendererBackend {
         return Some(Self::Vulkan);
         #[cfg(all(feature = "dx12", windows, not(feature = "vulkan")))]
         return Some(Self::Dx12);
+        #[cfg(all(feature = "opengl", windows, not(feature = "vulkan"), not(feature = "dx12")))]
+        return Some(Self::OpenGl);
         #[allow(unreachable_code)]
         None
     }
@@ -85,6 +96,8 @@ pub(crate) enum GpuContext {
     Vulkan(Arc<RenderContext<VulkanGpu>>),
     #[cfg(all(feature = "dx12", windows))]
     Dx12(Arc<RenderContext<D3d12Gpu>>),
+    #[cfg(all(feature = "opengl", windows))]
+    OpenGl(Arc<RenderContext<GlGpu>>),
     #[allow(dead_code)]
     Absent(Infallible),
 }
@@ -97,6 +110,8 @@ pub(crate) enum WindowAtlas {
     Vulkan(Arc<Atlas<VulkanGpu>>),
     #[cfg(all(feature = "dx12", windows))]
     Dx12(Arc<Atlas<D3d12Gpu>>),
+    #[cfg(all(feature = "opengl", windows))]
+    OpenGl(Arc<Atlas<GlGpu>>),
     #[allow(dead_code)]
     Absent(Infallible),
 }
@@ -109,6 +124,8 @@ pub(crate) enum WindowRenderer {
     Vulkan(Renderer<VulkanGpu>),
     #[cfg(all(feature = "dx12", windows))]
     Dx12(Renderer<D3d12Gpu>),
+    #[cfg(all(feature = "opengl", windows))]
+    OpenGl(Renderer<GlGpu>),
     #[allow(dead_code)]
     Absent(Infallible),
 }
@@ -123,6 +140,8 @@ macro_rules! dispatch {
             $enum::Vulkan($inner) => $body,
             #[cfg(all(feature = "dx12", windows))]
             $enum::Dx12($inner) => $body,
+            #[cfg(all(feature = "opengl", windows))]
+            $enum::OpenGl($inner) => $body,
             $enum::Absent(never) => match *never {},
         }
     };
@@ -139,6 +158,8 @@ impl GpuContext {
             RendererBackend::Vulkan => Ok(Self::Vulkan(Arc::new(RenderContext::with_gpu(VulkanGpu::new()?)))),
             #[cfg(all(feature = "dx12", windows))]
             RendererBackend::Dx12 => Ok(Self::Dx12(Arc::new(RenderContext::with_gpu(D3d12Gpu::new()?)))),
+            #[cfg(all(feature = "opengl", windows))]
+            RendererBackend::OpenGl => Ok(Self::OpenGl(Arc::new(RenderContext::with_gpu(GlGpu::new()?)))),
             RendererBackend::Absent(never) => match *never {},
         }
     }
@@ -151,6 +172,8 @@ impl GpuContext {
             Self::Vulkan(context) => WindowAtlas::Vulkan(Arc::new(Atlas::new(context.gpu.clone()))),
             #[cfg(all(feature = "dx12", windows))]
             Self::Dx12(context) => WindowAtlas::Dx12(Arc::new(Atlas::new(context.gpu.clone()))),
+            #[cfg(all(feature = "opengl", windows))]
+            Self::OpenGl(context) => WindowAtlas::OpenGl(Arc::new(Atlas::new(context.gpu.clone()))),
             Self::Absent(never) => match *never {},
         }
     }
@@ -182,6 +205,14 @@ impl GpuContext {
             )?)),
             #[cfg(all(feature = "dx12", windows))]
             (Self::Dx12(context), WindowAtlas::Dx12(atlas)) => Ok(WindowRenderer::Dx12(Renderer::new(
+                context.clone(),
+                window,
+                atlas.clone(),
+                width,
+                height,
+            )?)),
+            #[cfg(all(feature = "opengl", windows))]
+            (Self::OpenGl(context), WindowAtlas::OpenGl(atlas)) => Ok(WindowRenderer::OpenGl(Renderer::new(
                 context.clone(),
                 window,
                 atlas.clone(),

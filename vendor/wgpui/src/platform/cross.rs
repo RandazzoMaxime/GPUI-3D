@@ -1,6 +1,6 @@
 // Sans aucun backend de rendu compilé, la couche GPU générique n'a aucune instance : code
 // mort et chemins inatteignables attendus.
-#![cfg_attr(not(any(feature = "wgpu", feature = "vulkan", all(feature = "dx12", windows))), allow(dead_code, unreachable_code, unused_variables))]
+#![cfg_attr(not(any(feature = "wgpu", feature = "vulkan", all(feature = "dx12", windows), all(feature = "opengl", windows))), allow(dead_code, unreachable_code, unused_variables))]
 
 pub mod atlas;
 pub mod dispatcher;

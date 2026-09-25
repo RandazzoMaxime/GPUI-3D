@@ -2048,6 +2048,7 @@ dependencies = [
  "futures-concurrency",
  "getrandom 0.4.1",
  "glam",
+ "glow",
  "gpui-macros",
  "gpui_collections",
  "gpui_http_client",
