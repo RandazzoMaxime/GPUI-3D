@@ -1,8 +1,8 @@
 //! Chrome GPUI + fil de rendu 3D, partagés par GPUI-WGPU et GPUI-METAL.
-//! Le moteur rend sur
-//! son propre fil dans une `WgpuSurface` triple-buffer du device de l'UI, publie par
-//! `present_synced_silent` + `request_window_redraw` ⇒ la fenêtre recompose la scène
-//! en cache, le chrome n'est jamais redessiné pour une trame 3D.
+//! Le moteur rend sur son propre fil dans une `WgpuSurface` triple-buffer du
+//! device de l'UI, publie par `present_synced_silent` + `request_window_redraw`
+//! ⇒ la fenêtre recompose la scène en cache, le chrome n'est jamais redessiné
+//! pour une trame 3D.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};

@@ -1,8 +1,10 @@
 # GPUI-3D
 
-Kit de démarrage : une app **GPUI** (chrome blanc) avec un **moteur 3D** derrière,
-un seul device GPU partagé entre l'UI
-et la 3D, zéro copie, et le chrome n'est **jamais** redessiné pour une trame 3D.
+## A repo to quickly start a GPUI project that needs 3D!
+
+[GPUI](https://www.gpui.rs/) UI on top, your real-time 3D engine underneath — one GPU device,
+zero copies, and the UI is never redrawn for a 3D frame. Pick a variant, copy its folder, replace
+the cube.
 
 **Pour démarrer une app : [`starter/`](starter/src/main.rs)**, un petit éditeur de scène
 (cubes 3D, liste, inspecteur, UI translucide sur la 3D) qui applique toutes les règles

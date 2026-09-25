@@ -36,7 +36,7 @@ impl Default for WgpuOptions {
 }
 
 // Compat (voir src/compat.rs) : les quatre poignées wgpu du
-// renderer, adoptables par l'hôte (le globe et le calcul doivent rendre sur
+// renderer, adoptables par l'hôte (le moteur 3D et le calcul doivent rendre sur
 // CE device — un second device, même adaptateur, a un autre registre d'ids).
 #[cfg(not(target_family = "wasm"))]
 static HOST_DEVICE: Mutex<Option<(wgpu::Instance, wgpu::Adapter, wgpu::Device, wgpu::Queue)>> =

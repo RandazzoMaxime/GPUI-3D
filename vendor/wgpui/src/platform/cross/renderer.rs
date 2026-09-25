@@ -4865,9 +4865,9 @@ impl WgpuRenderer {
     /// Returns true if successful, false if compositor should run.
     pub fn blit_surfaces_direct(&self, pending_surfaces: &[SurfaceId]) -> bool {
         // Ce chemin repeint les surfaces PAR-DESSUS le framebuffer compose ; il
-        // n'est juste que si rien n'est dessine au-dessus d'elles. Le
-        // chrome recouvre le globe et le verre : une image sur deux perdait le
-        // chrome (2026-09-03). Repli = dessin normal avec rejeu des caches.
+        // n'est juste que si rien n'est dessine au-dessus d'elles. Le chrome
+        // recouvre la 3D et le verre : une image sur deux perdait le chrome
+        // (2026-09-03). Repli = dessin normal avec rejeu des caches.
         if !pending_surfaces.is_empty() {
             crate::render_stats::count("fast blit: disabled (chrome overlays surfaces)");
             return false;
@@ -4960,7 +4960,7 @@ impl WgpuRenderer {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("fast_surface_blit"),
                 });
-        // Le quad du globe se dessine dans le framebuffer persistant, jamais
+        // Le quad 3D se dessine dans le framebuffer persistant, jamais
         // dans l'image de swapchain acquise : celle-ci date de 2-3 presentations
         // et son chrome est perime (flicker au survol, 2026-09-03).
         let (Some(framebuffer), Some(framebuffer_view)) = (

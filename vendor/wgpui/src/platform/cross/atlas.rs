@@ -347,7 +347,7 @@ impl WgpuAtlasState {
         let contents = padded_data.as_deref().unwrap_or(bytes);
 
         // Work around driver issues by using queue.write_texture directly
-        // instead of staging through a buffer (see helio/ship_flight repro).
+        // instead of staging through a buffer (driver workaround).
         let texture = &self.storage[texture_id];
 
         self.context.queue.write_texture(

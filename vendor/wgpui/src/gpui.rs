@@ -125,7 +125,7 @@ pub use platform::*;
 pub use platform::cross::render_context::{AdapterSelector, WgpuOptions};
 pub use platform::cross::surface_registry::SurfaceId;
 // Compat (voir compat.rs) : partage du device wgpu du renderer
-// avec le globe et le calcul de l'hôte.
+// avec le moteur 3D et le calcul de l'hôte.
 #[cfg(not(target_family = "wasm"))]
 pub use platform::cross::render_context::{enumerate_qualifying_adapters, host_device};
 #[cfg(feature = "flamegraph")]

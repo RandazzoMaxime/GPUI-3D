@@ -1,9 +1,8 @@
 # Forks vendorés
 
-Ces forks ont divergé de leurs
-amonts (patchs GPUI-3D) et ne sont plus synchronisés
-automatiquement. Un correctif amont se reprend à la main (voir « Reprendre un
-correctif amont »).
+Ces forks ont divergé de leurs amonts (patchs GPUI-3D) et ne sont plus
+synchronisés automatiquement. Un correctif amont se reprend à la main
+(voir « Reprendre un correctif amont »).
 
 ## `vendor/wgpui` : GPUI (paquet `gpui-ce`, crate `gpui`)
 
@@ -12,13 +11,11 @@ correctif amont »).
 | Origine | [Zed GPUI](https://github.com/zed-industries/zed) (`crates/gpui`) | — |
 | Fork communautaire | [gpui-ce/gpui-ce](https://github.com/gpui-ce/gpui-ce) | — |
 | Backend unique wgpu + winit | [Far-Beyond-Pulsar/WGPUI](https://github.com/Far-Beyond-Pulsar/wgpui) | `f9c3abb4a` (main) |
-| Patchs | `this repository`, `vendor/wgpui` | vendoré en `a98026205` (2026-09-02), copié ici depuis `4751d3d4e` (2026-09-23) |
 | Patchs GPUI-3D | ce dépôt | branche `optim` |
 
 Licence : Apache-2.0 (`vendor/wgpui/LICENSE-APACHE`).
 
-API
-rétablies pour gpui-component (`src/compat.rs`, blocs « Compat »), device
+API rétablies pour gpui-component (`src/compat.rs`, blocs « Compat »), device
 hôte partagé et sélecteur d'adaptateur, `WgpuSurfaceHandle` (surfaces zéro copie,
 `present_synced_silent`, `request_window_redraw`), boucle réveillée seulement quand une
 trame est voulue, couches retenues désactivées par défaut (`WGPUI_LAYERS`), corrections
@@ -47,7 +44,7 @@ Tests : `cd vendor/wgpui && cargo test --lib --features test-support`
 | Étape | Source | Révision |
 |---|---|---|
 | Origine | [longbridge/gpui-component](https://github.com/longbridge/gpui-component) | 0.5.2 |
-| Adaptation WGPUI | `this repository`, `vendor/gpui-component` | fork local `ebef0e1c`, vendoré en `a98026205`, lock `19e1cdf75` |
+| Adaptation WGPUI | ce dépôt, `vendor/gpui-component` | fork local `ebef0e1c`, vendoré en `a98026205`, lock `19e1cdf75` |
 | GPUI-3D | ce dépôt | seules `crates/{ui,base,macros,assets}` ; feature `flamegraph` de gpui retirée du workspace |
 
 Licence : Apache-2.0 (`vendor/gpui-component/LICENSE-APACHE`).
@@ -57,7 +54,7 @@ Licence : Apache-2.0 (`vendor/gpui-component/LICENSE-APACHE`).
 | Étape | Source | Révision |
 |---|---|---|
 | Origine | [tristanpoland/priority-threadpool](https://github.com/tristanpoland/priority-threadpool) | `bb1ab91` |
-| Patch | `this repository` `5e5c4caae` : course `fetch_add`/`push` corrigée (jobs orphelins ⇒ timers GPUI perdus) | — |
+| Patch GPUI-3D | course `fetch_add`/`push` corrigée (jobs orphelins ⇒ timers GPUI perdus) | — |
 
 Licence : MIT (`vendor/priority-threadpool/LICENSE`). Branché par `[patch]` dans le
 `Cargo.toml` racine.
@@ -73,5 +70,4 @@ Licence : MIT (`vendor/priority-threadpool/LICENSE`). Branché par `[patch]` dan
    mesures.
 5. Commiter en citant le commit amont.
 
-Un correctif amont utile ici se reporte dans
-chaque dépôt.
+Un correctif amont utile ici se reporte dans ce dépôt.
